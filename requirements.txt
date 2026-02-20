@@ -1,0 +1,14 @@
+aiogram==3.4.1
+aiohttp==3.9.3
+python-dotenv==1.0.1
+aiosqlite==0.20.0
+pydantic
+pydantic-settings
+faust-cchardet==2.1.19
+aiodns==3.1.1
+Brotli==1.1.0
+cryptography==42.0.5
+cryptos
+alembic==1.13.1
+cachetools==5.3.3
+bitcoinlib==0.6.14
