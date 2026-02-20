@@ -1,4 +1,5 @@
-"""Обработчики админ-панели для управления крипто-кошельками"""
+# bot/admin/wallets.py
+"""Обработчики админ-панели для управления крипто-кошельками."""
 
 import logging
 import html
@@ -18,19 +19,33 @@ router = Router()
 
 @router.callback_query(F.data == "admin_wallets_menu")
 async def admin_wallets_menu(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Главное меню управления кошельками."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
+        logger.warning(f"[ADMIN {admin_id}] Попытка доступа к меню кошельков без прав")
         return
 
+    logger.info(f"[ADMIN {admin_id}] Открыто меню управления кошельками")
     await callback.answer()
 
-    balances = await admin_wallet_service.refresh_balances()
-    btc_balance = balances['BTC']
-    ltc_balance = balances['LTC']
+    try:
+        balances = await admin_wallet_service.refresh_balances()
+        btc_balance = balances['BTC']
+        ltc_balance = balances['LTC']
+        logger.debug(f"Балансы: BTC={btc_balance}, LTC={ltc_balance}")
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при обновлении балансов: {e}", exc_info=True)
+        btc_balance = ltc_balance = 0.0
 
-    wallets = await admin_wallet_service.get_wallets()
-    btc_wallets = [w for w in wallets if w.crypto_type == 'BTC']
-    ltc_wallets = [w for w in wallets if w.crypto_type == 'LTC']
+    try:
+        wallets = await admin_wallet_service.get_wallets()
+        btc_wallets = [w for w in wallets if w.crypto_type == 'BTC']
+        ltc_wallets = [w for w in wallets if w.crypto_type == 'LTC']
+        logger.debug(f"Кошельков BTC: {len(btc_wallets)}, LTC: {len(ltc_wallets)}")
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при получении списка кошельков: {e}", exc_info=True)
+        btc_wallets = ltc_wallets = []
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="➕ Добавить кошелек", callback_data="admin_wallet_add")
@@ -57,10 +72,13 @@ async def admin_wallets_menu(callback: CallbackQuery, admin_wallet_service: Admi
 
 @router.callback_query(F.data == "admin_wallet_add")
 async def admin_wallet_add_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    """Начало добавления кошелька (выбор типа)."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Начало добавления кошелька")
     await state.set_state(AdminStates.adding_wallet_type)
 
     keyboard = InlineKeyboardBuilder()
@@ -80,15 +98,19 @@ async def admin_wallet_add_start(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("wallet_type_"))
 async def admin_wallet_address(callback: CallbackQuery, state: FSMContext):
+    """Выбор типа, запрос адреса кошелька."""
+    admin_id = callback.from_user.id
     crypto_type = callback.data.split("_")[2]
+    logger.info(f"[ADMIN {admin_id}] Выбран тип кошелька: {crypto_type}")
 
     await state.update_data(wallet_type=crypto_type)
     await state.set_state(AdminStates.adding_wallet_address)
 
+    example = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' if crypto_type == 'BTC' else 'LVgDpZd7dJ6t7mLqFf7vQZpC7J7z4y5Y5'
     await callback.message.edit_text(
         f"💎 <b>Добавление {crypto_type} кошелька</b>\n\n"
         f"Введите публичный адрес кошелька:\n"
-        f"(например: {'1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' if crypto_type == 'BTC' else 'LVgDpZd7dJ6t7mLqFf7vQZpC7J7z4y5Y5'})",
+        f"(например: {example})",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -96,11 +118,16 @@ async def admin_wallet_address(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.adding_wallet_address)
 async def admin_wallet_key(message: Message, state: FSMContext):
+    """Обработка адреса, запрос приватного ключа."""
+    admin_id = message.from_user.id
     address = message.text.strip()
     data = await state.get_data()
     crypto_type = data.get('wallet_type')
 
+    logger.info(f"[ADMIN {admin_id}] Ввод адреса {crypto_type}: {address}")
+
     if len(address) < 26 or len(address) > 60:
+        logger.warning(f"[ADMIN {admin_id}] Некорректная длина адреса: {len(address)}")
         await message.answer("❌ Некорректный адрес. Попробуйте еще раз:")
         return
 
@@ -118,9 +145,14 @@ async def admin_wallet_key(message: Message, state: FSMContext):
 
 @router.message(AdminStates.adding_wallet_key)
 async def admin_wallet_label(message: Message, state: FSMContext):
+    """Обработка приватного ключа, запрос метки."""
+    admin_id = message.from_user.id
     private_key = message.text.strip()
 
+    logger.info(f"[ADMIN {admin_id}] Ввод приватного ключа (длина {len(private_key)})")
+
     if len(private_key) < 50:
+        logger.warning(f"[ADMIN {admin_id}] Слишком короткий ключ: {len(private_key)}")
         await message.answer("❌ Некорректный WIF ключ. Попробуйте еще раз:")
         return
 
@@ -135,8 +167,12 @@ async def admin_wallet_label(message: Message, state: FSMContext):
 
 @router.message(AdminStates.adding_wallet_label)
 async def admin_wallet_finish(message: Message, state: FSMContext, admin_wallet_service: AdminWalletService):
+    """Финализация добавления кошелька."""
+    admin_id = message.from_user.id
     label = message.text.strip() or None
     data = await state.get_data()
+
+    logger.info(f"[ADMIN {admin_id}] Сохранение кошелька: {data['wallet_type']}, адрес {data['wallet_address']}, метка {label}")
 
     try:
         wallet_id = await admin_wallet_service.add_wallet(
@@ -145,15 +181,22 @@ async def admin_wallet_finish(message: Message, state: FSMContext, admin_wallet_
             private_key=data['wallet_key'],
             label=label
         )
+        logger.info(f"[ADMIN {admin_id}] Кошелёк добавлен, ID: {wallet_id}")
     except Exception as e:
         if "UNIQUE constraint failed" in str(e):
+            logger.warning(f"[ADMIN {admin_id}] Попытка добавить существующий адрес: {data['wallet_address']}")
             await message.answer("❌ Кошелек с таким адресом уже существует.")
         else:
+            logger.error(f"[ADMIN {admin_id}] Ошибка при добавлении кошелька: {e}", exc_info=True)
             await message.answer(f"❌ Ошибка при добавлении кошелька: {e}")
         await state.clear()
         return
 
-    await admin_wallet_service.wallet_manager.update_balance(wallet_id)
+    try:
+        await admin_wallet_service.wallet_manager.update_balance(wallet_id)
+        logger.info(f"[ADMIN {admin_id}] Баланс кошелька #{wallet_id} обновлён")
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при обновлении баланса кошелька #{wallet_id}: {e}", exc_info=True)
 
     safe_address = html.escape(data['wallet_address'])
     await message.answer(
@@ -169,11 +212,21 @@ async def admin_wallet_finish(message: Message, state: FSMContext, admin_wallet_
 
 @router.callback_query(F.data == "admin_wallet_list")
 async def admin_wallet_list(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Список всех кошельков с кнопками управления."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    wallets = await admin_wallet_service.get_wallets(include_inactive=True)
+    logger.info(f"[ADMIN {admin_id}] Запрос списка кошельков")
+
+    try:
+        wallets = await admin_wallet_service.get_wallets(include_inactive=True)
+        logger.debug(f"Получено {len(wallets)} кошельков")
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при получении списка кошельков: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
+        return
 
     if not wallets:
         await callback.answer("Нет добавленных кошельков", show_alert=True)
@@ -208,52 +261,69 @@ async def admin_wallet_list(callback: CallbackQuery, admin_wallet_service: Admin
 
 @router.callback_query(F.data.startswith("admin_wallet_deactivate_"))
 async def admin_wallet_deactivate_confirm(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Деактивация кошелька (без подтверждения)."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     try:
         wallet_id = int(callback.data.split("_")[-1])
+        logger.info(f"[ADMIN {admin_id}] Деактивация кошелька #{wallet_id}")
     except (IndexError, ValueError):
+        logger.warning(f"[ADMIN {admin_id}] Некорректный формат данных: {callback.data}")
         await callback.answer("❌ Ошибка формата данных", show_alert=True)
         return
 
-    success = await admin_wallet_service.deactivate_wallet(wallet_id)
-    if success:
-        try:
+    try:
+        success = await admin_wallet_service.deactivate_wallet(wallet_id)
+        if success:
+            logger.info(f"[ADMIN {admin_id}] Кошелёк #{wallet_id} деактивирован")
             await callback.answer("✅ Кошелек деактивирован", show_alert=True)
-        except Exception:
-            pass
-        await admin_wallet_list(callback, admin_wallet_service)
-    else:
-        await callback.answer("❌ Ошибка при деактивации", show_alert=True)
+        else:
+            logger.warning(f"[ADMIN {admin_id}] Не удалось деактивировать кошелёк #{wallet_id}")
+            await callback.answer("❌ Ошибка при деактивации", show_alert=True)
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при деактивации кошелька #{wallet_id}: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+    # Обновляем список
+    await admin_wallet_list(callback, admin_wallet_service)
 
 
 @router.callback_query(F.data.startswith("admin_wallet_activate_"))
 async def admin_wallet_activate(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа", show_alert=True)
-        return
+    """Активация кошелька (в разработке, просто заглушка)."""
+    admin_id = callback.from_user.id
+    logger.info(f"[ADMIN {admin_id}] Нажата кнопка активации кошелька (заглушка)")
     await callback.answer("⏳ Функция активации в разработке", show_alert=True)
 
 
-# ==================== ПОЛНОЕ УДАЛЕНИЕ КОШЕЛЬКА ====================
-
 @router.callback_query(F.data.startswith("admin_wallet_hard_delete_confirm_"))
 async def admin_wallet_hard_delete_confirm(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Подтверждение полного удаления кошелька."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     try:
         wallet_id = int(callback.data.split("_")[-1])
+        logger.info(f"[ADMIN {admin_id}] Запрос на полное удаление кошелька #{wallet_id}")
     except (IndexError, ValueError):
+        logger.warning(f"[ADMIN {admin_id}] Некорректный формат данных: {callback.data}")
         await callback.answer("❌ Ошибка формата данных", show_alert=True)
         return
 
-    wallet = await admin_wallet_service.db.get_wallet(wallet_id=wallet_id)
-    if not wallet:
-        await callback.answer("❌ Кошелек не найден", show_alert=True)
+    try:
+        wallet = await admin_wallet_service.db.get_wallet(wallet_id=wallet_id)
+        if not wallet:
+            logger.warning(f"[ADMIN {admin_id}] Кошелёк #{wallet_id} не найден")
+            await callback.answer("❌ Кошелек не найден", show_alert=True)
+            return
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при получении данных кошелька: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
 
     text = (
@@ -277,41 +347,50 @@ async def admin_wallet_hard_delete_confirm(callback: CallbackQuery, admin_wallet
 
 @router.callback_query(F.data.startswith("admin_wallet_hard_delete_execute_"))
 async def admin_wallet_hard_delete_execute(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Исполнение полного удаления кошелька."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     try:
         wallet_id = int(callback.data.split("_")[-1])
+        logger.info(f"[ADMIN {admin_id}] Подтверждено полное удаление кошелька #{wallet_id}")
     except (IndexError, ValueError):
+        logger.warning(f"[ADMIN {admin_id}] Некорректный формат данных: {callback.data}")
         await callback.answer("❌ Ошибка формата данных", show_alert=True)
         return
 
     try:
         success = await admin_wallet_service.hard_delete_wallet(wallet_id)
         if success:
-            try:
-                await callback.answer("✅ Кошелек полностью удалён", show_alert=True)
-            except Exception:
-                pass
-            await admin_wallet_list(callback, admin_wallet_service)
+            logger.info(f"[ADMIN {admin_id}] Кошелёк #{wallet_id} полностью удалён")
+            await callback.answer("✅ Кошелек полностью удалён", show_alert=True)
         else:
+            logger.warning(f"[ADMIN {admin_id}] Не удалось удалить кошелёк #{wallet_id}")
             await callback.answer("❌ Ошибка при удалении (неизвестная причина)", show_alert=True)
     except Exception as e:
         error_str = str(e)
         if "FOREIGN KEY constraint failed" in error_str:
+            logger.warning(f"[ADMIN {admin_id}] Попытка удалить кошелёк #{wallet_id} с связанными транзакциями")
             await callback.answer("❌ Нельзя удалить: есть связанные транзакции. Сначала удалите их вручную.", show_alert=True)
         else:
+            logger.error(f"[ADMIN {admin_id}] Ошибка при полном удалении кошелька: {e}", exc_info=True)
             await callback.answer(f"❌ Ошибка: {error_str[:100]}", show_alert=True)
 
+    # Возвращаемся к списку
+    await admin_wallet_list(callback, admin_wallet_service)
 
-# ==================== УДАЛЕНИЕ ВСЕХ КОШЕЛЬКОВ (ДЕАКТИВАЦИЯ) ====================
 
 @router.callback_query(F.data == "admin_wallets_delete_all_confirm")
 async def admin_wallets_delete_all_confirm(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    """Подтверждение деактивации всех кошельков."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
+
+    logger.info(f"[ADMIN {admin_id}] Запрос на деактивацию всех кошельков")
 
     text = (
         "⚠️ <b>Подтверждение деактивации всех кошельков</b>\n\n"
@@ -332,43 +411,57 @@ async def admin_wallets_delete_all_confirm(callback: CallbackQuery):
 
 @router.callback_query(F.data == "admin_wallets_delete_all_execute")
 async def admin_wallets_delete_all_execute(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Исполнение деактивации всех кошельков."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    wallets = await admin_wallet_service.get_wallets(include_inactive=True)
-    if not wallets:
-        await callback.answer("📭 Нет кошельков для деактивации", show_alert=True)
-        return
-
-    deactivated = 0
-    for wallet in wallets:
-        if wallet.is_active:
-            await admin_wallet_service.deactivate_wallet(wallet.id)
-            deactivated += 1
+    logger.info(f"[ADMIN {admin_id}] Выполнение деактивации всех кошельков")
 
     try:
+        wallets = await admin_wallet_service.get_wallets(include_inactive=True)
+        if not wallets:
+            await callback.answer("📭 Нет кошельков для деактивации", show_alert=True)
+            return
+
+        deactivated = 0
+        for wallet in wallets:
+            if wallet.is_active:
+                await admin_wallet_service.deactivate_wallet(wallet.id)
+                deactivated += 1
+                logger.debug(f"Деактивирован кошелёк #{wallet.id}")
+
+        logger.info(f"[ADMIN {admin_id}] Деактивировано кошельков: {deactivated}")
         await callback.answer(f"✅ Деактивировано кошельков: {deactivated}", show_alert=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при деактивации всех кошельков: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при деактивации", show_alert=True)
 
     await admin_wallets_menu(callback, admin_wallet_service)
 
 
-# ==================== ОБНОВЛЕНИЕ БАЛАНСОВ ====================
-
 @router.callback_query(F.data == "admin_wallet_refresh")
 async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """Обновление балансов всех кошельков."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Обновление балансов всех кошельков")
     await callback.answer("🔄 Обновляю балансы...", show_alert=False)
 
-    balances = await admin_wallet_service.refresh_balances()
-    wallets = await admin_wallet_service.get_wallets()
-    btc_wallets = [w for w in wallets if w.crypto_type == 'BTC']
-    ltc_wallets = [w for w in wallets if w.crypto_type == 'LTC']
+    try:
+        balances = await admin_wallet_service.refresh_balances()
+        wallets = await admin_wallet_service.get_wallets()
+        btc_wallets = [w for w in wallets if w.crypto_type == 'BTC']
+        ltc_wallets = [w for w in wallets if w.crypto_type == 'LTC']
+        logger.info(f"[ADMIN {admin_id}] Балансы обновлены: BTC={balances['BTC']}, LTC={balances['LTC']}")
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при обновлении балансов: {e}", exc_info=True)
+        await callback.message.answer("❌ Ошибка при обновлении балансов.")
+        return
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="➕ Добавить кошелек", callback_data="admin_wallet_add")
@@ -394,19 +487,27 @@ async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: Ad
         await callback.message.edit_text(new_text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     except Exception as e:
         if "message is not modified" not in str(e):
-            logger.error(f"Ошибка при обновлении сообщения: {e}")
+            logger.error(f"[ADMIN {admin_id}] Ошибка при редактировании сообщения: {e}")
             await callback.message.answer(new_text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
 
 
-# ==================== ИСТОРИЯ ТРАНЗАКЦИЙ ====================
-
 @router.callback_query(F.data == "admin_wallet_tx_history")
 async def admin_wallet_tx_history(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    if not is_admin(callback.from_user.id):
+    """История крипто-транзакций."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    transactions = await admin_wallet_service.wallet_manager.get_transaction_history(limit=20)
+    logger.info(f"[ADMIN {admin_id}] Запрос истории транзакций")
+
+    try:
+        transactions = await admin_wallet_service.wallet_manager.get_transaction_history(limit=20)
+        logger.debug(f"Получено {len(transactions)} транзакций")
+    except Exception as e:
+        logger.error(f"[ADMIN {admin_id}] Ошибка при получении истории транзакций: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
+        return
 
     if not transactions:
         await callback.answer("Нет транзакций", show_alert=True)

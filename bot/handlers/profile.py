@@ -1,20 +1,30 @@
-"""Личный кабинет пользователя"""
+# bot/handlers/profile.py
+"""
+Обработчики для личного кабинета пользователя.
+Отображают информацию о пользователе, статистику, бонусы, промокоды,
+реферальную программу и настройки.
+"""
 
+import logging
 from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.services.db import db  # <-- исправлено
-from bot.services.db.user_repository import User  # <-- если нужно использовать модель User
+from bot.services.db import db
 from bot.services.crypto_api import crypto_api
 from bot.keyboards import main_menu_keyboard
 
+# Настройка логгера для текущего модуля
+logger = logging.getLogger(__name__)
 router = Router()
 
 
 def user_profile_keyboard():
+    """
+    Создаёт инлайн-клавиатуру для разделов личного кабинета.
+    """
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📊 Моя статистика", callback_data="user_stats")
     keyboard.button(text="💰 Бонусный баланс", callback_data="user_bonus")
@@ -29,19 +39,30 @@ def user_profile_keyboard():
 @router.message(Command("profile"))
 @router.message(F.text == "👤 Личный кабинет")
 async def cmd_profile(message: Message):
-    user = await db.get_user(message.from_user.id)
+    """
+    Обработчик команды /profile или нажатия кнопки «👤 Личный кабинет».
+    Отображает основную информацию о пользователе и статистику.
+    """
+    user_id = message.from_user.id
+    logger.info(f"[{user_id}] Открыт личный кабинет")
 
+    # Получаем пользователя из БД (если не существует, создаём)
+    user = await db.get_user(user_id)
     if not user:
+        logger.info(f"[{user_id}] Пользователь не найден в БД, создаём запись")
         await db.add_or_update_user(
-            user_id=message.from_user.id,
+            user_id=user_id,
             username=message.from_user.username,
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name
         )
-        user = await db.get_user(message.from_user.id)
+        user = await db.get_user(user_id)
+        logger.info(f"[{user_id}] Запись пользователя создана")
 
-    is_banned, ban_reason = await db.is_user_banned(message.from_user.id)
+    # Проверяем, не забанен ли пользователь
+    is_banned, ban_reason = await db.is_user_banned(user_id)
     if is_banned:
+        logger.warning(f"[{user_id}] Попытка доступа забаненным пользователем")
         await message.answer(
             f"🚫 <b>Ваш аккаунт заблокирован</b>\n\n"
             f"Причина: {ban_reason}\n\n"
@@ -50,7 +71,8 @@ async def cmd_profile(message: Message):
         )
         return
 
-    stats = await db.get_user_stats(message.from_user.id)
+    # Получаем статистику пользователя
+    stats = await db.get_user_stats(user_id)
     prices = await crypto_api.get_all_prices()
 
     text = (
@@ -73,13 +95,19 @@ async def cmd_profile(message: Message):
     text += "Выберите раздел:"
 
     await message.answer(text, reply_markup=user_profile_keyboard(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Информация профиля отправлена")
 
 
 @router.callback_query(F.data == "user_stats")
 async def user_stats(callback: CallbackQuery):
-    user = await db.get_user(callback.from_user.id)
-    stats = await db.get_user_stats(callback.from_user.id)
-    orders = await db.get_user_orders(callback.from_user.id, limit=5)
+    """
+    Показывает подробную статистику пользователя и последние заявки.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошена статистика")
+
+    stats = await db.get_user_stats(user_id)
+    orders = await db.get_user_orders(user_id, limit=5)
 
     text = (
         f"📊 <b>Моя статистика</b>\n\n"
@@ -117,12 +145,23 @@ async def user_stats(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
 
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Статистика отправлена")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_bonus")
 async def user_bonus(callback: CallbackQuery):
-    user = await db.get_user(callback.from_user.id)
+    """
+    Показывает бонусный баланс и информацию о том, как его заработать.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошен бонусный баланс")
+
+    user = await db.get_user(user_id)
+    if not user:
+        logger.error(f"[{user_id}] Пользователь не найден в БД при запросе бонусов")
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
+        return
 
     text = (
         f"💰 <b>Бонусный баланс</b>\n\n"
@@ -141,57 +180,80 @@ async def user_bonus(callback: CallbackQuery):
     keyboard.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Информация о бонусах отправлена")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_promos")
 async def user_promos(callback: CallbackQuery):
-    all_promos = await db.get_all_promo_codes()
-    used_promo_ids = await db.get_user_used_promo_ids(callback.from_user.id)
-    used_promo_ids = set(used_promo_ids)
+    """
+    Показывает список доступных и использованных промокодов.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошен список промокодов")
 
-    now = datetime.now().isoformat()
-    available = []
-    used = []
+    try:
+        all_promos = await db.get_all_promo_codes()
+        used_promo_ids = await db.get_user_used_promo_ids(user_id)
+        used_promo_ids = set(used_promo_ids)
 
-    for promo in all_promos:
-        if not promo.is_active:
-            continue
-        if promo.valid_to and promo.valid_to < now:
-            continue
+        now = datetime.now().isoformat()
+        available = []
+        used = []
 
-        if promo.id in used_promo_ids:
-            used.append(promo)
+        for promo in all_promos:
+            if not promo.is_active:
+                continue
+            if promo.valid_to and promo.valid_to < now:
+                continue
+
+            if promo.id in used_promo_ids:
+                used.append(promo)
+            else:
+                available.append(promo)
+
+        text = "🎁 <b>Мои промокоды</b>\n\n"
+
+        if available:
+            text += "<b>Доступные для использования:</b>\n"
+            for promo in available:
+                text += f"• <code>{promo.code}</code> — скидка {promo.discount_percent}% (осталось {promo.max_uses - promo.used_count} шт.)\n"
         else:
-            available.append(promo)
+            text += "У вас нет доступных промокодов.\n"
 
-    text = "🎁 <b>Мои промокоды</b>\n\n"
+        if used:
+            text += "\n<b>Использованные:</b>\n"
+            for promo in used:
+                text += f"• {promo.code} — скидка {promo.discount_percent}%\n"
 
-    if available:
-        text += "<b>Доступные для использования:</b>\n"
-        for promo in available:
-            text += f"• <code>{promo.code}</code> — скидка {promo.discount_percent}% (осталось {promo.max_uses - promo.used_count} шт.)\n"
-    else:
-        text += "У вас нет доступных промокодов.\n"
+        if not available and not used:
+            text = "🎁 <b>Мои промокоды</b>\n\nУ вас пока нет промокодов. Следите за акциями!"
 
-    if used:
-        text += "\n<b>Использованные:</b>\n"
-        for promo in used:
-            text += f"• {promo.code} — скидка {promo.discount_percent}%\n"
-
-    if not available and not used:
-        text = "🎁 <b>Мои промокоды</b>\n\nУ вас пока нет промокодов. Следите за акциями!"
+    except Exception as e:
+        logger.error(f"[{user_id}] Ошибка при получении промокодов: {e}", exc_info=True)
+        text = "❌ Произошла ошибка при загрузке промокодов."
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
 
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Список промокодов отправлен")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_referral")
 async def user_referral(callback: CallbackQuery):
-    user = await db.get_user(callback.from_user.id)
+    """
+    Показывает реферальную ссылку и код пользователя.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошена реферальная программа")
+
+    user = await db.get_user(user_id)
+    if not user:
+        logger.error(f"[{user_id}] Пользователь не найден в БД при запросе рефералов")
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
+        return
 
     bot_info = await callback.bot.get_me()
     referral_link = f"https://t.me/{bot_info.username}?start=ref{user.user_id}"
@@ -211,12 +273,23 @@ async def user_referral(callback: CallbackQuery):
     keyboard.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Реферальная информация отправлена")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_settings")
 async def user_settings(callback: CallbackQuery):
-    user = await db.get_user(callback.from_user.id)
+    """
+    Отображает настройки пользователя (уведомления, язык).
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошены настройки")
+
+    user = await db.get_user(user_id)
+    if not user:
+        logger.error(f"[{user_id}] Пользователь не найден в БД при запросе настроек")
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
+        return
 
     text = (
         f"⚙️ <b>Настройки</b>\n\n"
@@ -231,31 +304,55 @@ async def user_settings(callback: CallbackQuery):
     keyboard.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Настройки отправлены")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_toggle_notifications")
 async def user_toggle_notifications(callback: CallbackQuery):
-    user = await db.get_user(callback.from_user.id)
-    new_value = not user.notifications_enabled
+    """
+    Переключает состояние уведомлений для пользователя.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Переключение уведомлений")
 
-    await db.set_user_notifications(callback.from_user.id, new_value)
+    user = await db.get_user(user_id)
+    if not user:
+        logger.error(f"[{user_id}] Пользователь не найден в БД при переключении уведомлений")
+        await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
+        return
+
+    new_value = not user.notifications_enabled
+    await db.set_user_notifications(user_id, new_value)
 
     status = "включены" if new_value else "отключены"
+    logger.info(f"[{user_id}] Уведомления теперь {status}")
     await callback.answer(f"Уведомления {status}", show_alert=True)
 
+    # Возвращаемся в меню настроек
     await user_settings(callback)
 
 
 @router.callback_query(F.data == "user_back_profile")
 async def user_back_profile(callback: CallbackQuery):
+    """
+    Возвращает пользователя в главное меню личного кабинета.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Возврат в главное меню профиля")
+
+    # Просто вызываем cmd_profile, передавая callback.message как message
     await cmd_profile(callback.message)
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_back_main")
 async def user_back_main(callback: CallbackQuery):
-    from bot.keyboards import main_menu_keyboard
+    """
+    Возвращает пользователя в главное меню бота.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Возврат в главное меню")
 
     await callback.message.edit_text(
         "Главное меню:",
@@ -266,3 +363,4 @@ async def user_back_main(callback: CallbackQuery):
         reply_markup=main_menu_keyboard()
     )
     await callback.answer()
+    logger.debug(f"[{user_id}] Главное меню отображено")

@@ -1,4 +1,5 @@
-"""Сервис для работы с оплатой и чеками"""
+# bot/services/payment_service.py
+"""Сервис для работы с оплатой и чеками."""
 
 import os
 import logging
@@ -11,19 +12,35 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.services.db import Database
 from bot.config.settings import config
-from bot.keyboards import admin_order_keyboard, receipt_keyboard
+from bot.keyboards import receipt_received_keyboard, receipt_keyboard
 
 logger = logging.getLogger(__name__)
 
 
 class PaymentService:
+    """
+    Сервис для обработки платежей:
+    - сохранение чеков
+    - уведомление администраторов о новых чеках
+    - получение банковских реквизитов
+    - отправка реквизитов пользователю (ручной режим)
+    - отправка напоминаний об оплате
+    """
+
     def __init__(self, db: Database):
         self.db = db
 
     async def save_receipt(self, order_id: int, file_path: str) -> bool:
-        """Сохраняет путь к чеку в заявке и меняет статус на paid"""
+        """
+        Сохраняет путь к чеку в заявке и меняет статус на 'paid'.
+        :param order_id: ID заявки
+        :param file_path: путь к сохранённому файлу чека
+        :return: True в случае успеха
+        """
+        logger.info(f"Сохранение чека для заявки #{order_id}, путь: {file_path}")
         await self.db.add_bank_receipt(order_id, file_path)
         await self.db.update_order_status(order_id, "paid")
+        logger.info(f"Статус заявки #{order_id} изменён на paid")
         return True
 
     async def notify_admins_about_receipt(
@@ -38,7 +55,11 @@ class PaymentService:
         crypto_address: str,
         file_path: str
     ) -> None:
-        """Отправляет уведомление админам с чеком и клавиатурой"""
+        """
+        Отправляет уведомление всем администраторам о получении чека.
+        К сообщению прикрепляется сам чек и клавиатура для подтверждения/отклонения.
+        """
+        logger.info(f"Уведомление администраторов о получении чека по заявке #{order_id}")
         safe_username = username if username else 'N/A'
         safe_address = crypto_address
 
@@ -52,15 +73,16 @@ class PaymentService:
         )
 
         for admin_id in config.ADMIN_IDS:
-            for attempt in range(3):
+            for attempt in range(3):  # до 3 попыток при ошибке
                 try:
                     await bot.send_document(
                         admin_id,
                         FSInputFile(file_path),
                         caption=caption,
-                        reply_markup=admin_order_keyboard(order_id),
+                        reply_markup=receipt_received_keyboard(order_id),
                         parse_mode="HTML"
                     )
+                    logger.info(f"Чек отправлен админу {admin_id}")
                     break
                 except Exception as e:
                     if attempt == 2:
@@ -71,12 +93,17 @@ class PaymentService:
     async def get_bank_details_for_order(self, payment_mode: str, payment_source: str) -> Dict[str, Any]:
         """
         Возвращает реквизиты для оплаты в зависимости от режима и источника.
-        Возвращает словарь с текстом и флагом, нужно ли ожидать ввода админа.
+        :param payment_mode: 'auto' или 'manual' (глобальный режим оплаты)
+        :param payment_source: 'auto' или 'manual' (источник реквизитов в ручном режиме)
+        :return: словарь с ключами 'success', 'auto' и данными реквизитов или сообщением об ошибке
         """
+        logger.debug(f"Получение реквизитов: payment_mode={payment_mode}, payment_source={payment_source}")
         if payment_mode == 'auto' or (payment_mode == 'manual' and payment_source == 'auto'):
             details = await self.db.get_bank_details()
             if not details:
+                logger.warning("Нет доступных реквизитов в БД")
                 return {'success': False, 'error': 'Нет доступных реквизитов'}
+            logger.debug(f"Найдены реквизиты: банк {details.bank_name}, карта {details.card_number[:4]}...")
             return {
                 'success': True,
                 'auto': True,
@@ -85,7 +112,7 @@ class PaymentService:
                 'holder_name': details.holder_name
             }
         else:
-            # Ручной ввод реквизитов админом
+            logger.debug("Ручной режим с вводом реквизитов администратором")
             return {
                 'success': True,
                 'auto': False,
@@ -100,7 +127,16 @@ class PaymentService:
         username: Optional[str],
         bot: Bot
     ) -> bool:
-        """Отправляет введённые админом реквизиты пользователю"""
+        """
+        Отправляет введённые администратором реквизиты пользователю.
+        :param order_id: ID заявки
+        :param details: текст реквизитов
+        :param user_id: ID пользователя
+        :param username: username пользователя (для логов)
+        :param bot: объект бота
+        :return: True, если сообщение отправлено успешно
+        """
+        logger.info(f"Отправка введённых реквизитов пользователю {user_id} по заявке #{order_id}")
         await self.db.set_order_manual_payment_details(order_id, details)
 
         try:
@@ -112,18 +148,21 @@ class PaymentService:
                 reply_markup=receipt_keyboard(order_id),
                 parse_mode="HTML"
             )
+            logger.info(f"Реквизиты успешно отправлены пользователю {user_id}")
             return True
         except Exception as e:
             logger.error(f"Ошибка отправки реквизитов пользователю {user_id}: {e}")
             return False
 
-    # ==================== НОВЫЙ МЕТОД ДЛЯ НАПОМИНАНИЙ С ДЕТАЛЯМИ ЗАЯВКИ ====================
-
     async def send_payment_reminder(self, bot: Bot, order, user_id: int) -> bool:
         """
-        Отправляет напоминание об оплате пользователю с деталями заявки и кнопкой для загрузки чека.
-        order - объект заявки (Order), содержащий все необходимые поля.
+        Отправляет пользователю напоминание об оплате с деталями заявки и кнопкой для загрузки чека.
+        :param bot: объект бота
+        :param order: объект заявки (Order)
+        :param user_id: ID пользователя
+        :return: True, если сообщение отправлено успешно
         """
+        logger.info(f"Отправка напоминания об оплате пользователю {user_id} по заявке #{order.id}")
         try:
             safe_address = order.crypto_address
             text = (
@@ -137,13 +176,13 @@ class PaymentService:
                 f"Пожалуйста, выполните перевод и загрузите чек, чтобы получить криптовалюту.\n\n"
                 f"Если у вас возникли вопросы, обратитесь в поддержку."
             )
-            # Используем receipt_keyboard, которая уже содержит кнопки "Прикрепить чек" и "Отменить заявку"
             await bot.send_message(
                 user_id,
                 text,
                 reply_markup=receipt_keyboard(order.id),
                 parse_mode="HTML"
             )
+            logger.info(f"Напоминание отправлено пользователю {user_id}")
             return True
         except Exception as e:
             logger.error(f"Ошибка отправки напоминания пользователю {user_id}: {e}")

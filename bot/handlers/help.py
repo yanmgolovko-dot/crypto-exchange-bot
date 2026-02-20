@@ -1,36 +1,73 @@
-"""Обработчики помощи и поддержки"""
+# bot/handlers/help.py
+"""
+Обработчики для раздела помощи и поддержки.
+Содержит функции для отображения меню помощи, ответов на часто задаваемые вопросы
+и отправки контактной информации поддержки.
+"""
 
+import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.keyboards import help_keyboard
 
+# Настройка логгера для текущего модуля
+logger = logging.getLogger(__name__)
 router = Router()
+
 
 @router.message(F.text == "❓ Помощь")
 async def help_menu(message: Message):
+    """
+    Обработчик нажатия кнопки «❓ Помощь» в главном меню.
+    Отправляет пользователю список доступных разделов помощи в виде инлайн-кнопок.
+    """
+    user_id = message.from_user.id
+    logger.info(f"[{user_id}] Пользователь открыл раздел помощи")
+
     text = (
         "❓ <b>Раздел помощи</b>\n\n"
         "Выберите интересующий вас вопрос:"
     )
+
     await message.answer(text, reply_markup=help_keyboard(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Отправлено меню помощи с клавиатурой")
+
 
 @router.message(F.text == "💬 Поддержка")
 async def support(message: Message):
+    """
+    Обработчик нажатия кнопки «💬 Поддержка» в главном меню.
+    Отправляет пользователю контактные данные службы поддержки.
+    """
+    user_id = message.from_user.id
+    logger.info(f"[{user_id}] Пользователь запросил контакты поддержки")
+
     text = (
         "💬 <b>Поддержка</b>\n\n"
         "Если у вас возникли вопросы или проблемы, напишите нам:\n\n"
-        "📧 Email: support@cryptoexchange.ru\n"
-        "💬 Telegram: @crypto_support\n\n"
+        # Используем кликабельные ссылки для удобства пользователей
+        "💬 <a href='https://t.me/arb_p2'>@arb_p2</a>\n"
+        "💬 <a href='https://t.me/BORZZ975'>@BORZZ975</a>\n\n"
         "⏱ Время работы поддержки: 24/7"
     )
+
     await message.answer(text, parse_mode="HTML")
+    logger.debug(f"[{user_id}] Отправлены контакты поддержки")
+
 
 @router.callback_query(F.data.startswith("help_"))
 async def help_callback(callback: CallbackQuery):
-    topic = callback.data.split("_", 1)[1]
+    """
+    Обработчик нажатий на инлайн-кнопки в разделе помощи.
+    Извлекает тему из callback_data и отправляет соответствующий текст.
+    """
+    user_id = callback.from_user.id
+    topic = callback.data.split("_", 1)[1]  # получаем тему (например, "how_to_buy")
+    logger.info(f"[{user_id}] Пользователь выбрал тему помощи: {topic}")
 
+    # Словарь с текстами для каждой темы
     texts = {
         "how_to_buy": (
             "📝 <b>Как купить криптовалюту</b>\n\n"
@@ -68,19 +105,34 @@ async def help_callback(callback: CallbackQuery):
         )
     }
 
+    # Получаем текст по теме или сообщение по умолчанию
     text = texts.get(topic, "Информация не найдена")
+    logger.debug(f"[{user_id}] Текст для темы {topic} подготовлен")
 
+    # Создаём клавиатуру для возврата в меню помощи
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="back_to_help")
 
+    # Отправляем/редактируем сообщение с текстом и кнопкой возврата
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Сообщение с темой {topic} отправлено")
     await callback.answer()
+
 
 @router.callback_query(F.data == "back_to_help")
 async def back_to_help(callback: CallbackQuery):
+    """
+    Обработчик кнопки «🔙 Назад» из подразделов помощи.
+    Возвращает пользователя к основному меню помощи.
+    """
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Пользователь вернулся в главное меню помощи")
+
     text = (
         "❓ <b>Раздел помощи</b>\n\n"
         "Выберите интересующий вас вопрос:"
     )
+    # Заменяем текущее сообщение на меню помощи
     await callback.message.edit_text(text, reply_markup=help_keyboard(), parse_mode="HTML")
+    logger.debug(f"[{user_id}] Главное меню помощи восстановлено")
     await callback.answer()

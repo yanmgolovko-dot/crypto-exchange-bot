@@ -1,3 +1,4 @@
+# bot/services/db/database.py
 """Основной класс базы данных, объединяющий все репозитории"""
 
 from .connection import DatabaseConnection
@@ -109,6 +110,9 @@ class Database:
         self.increment_bot_version = self.settings.increment_bot_version
         self.get_manual_payment_source = self.settings.get_manual_payment_source
         self.set_manual_payment_source = self.settings.set_manual_payment_source
+        # НОВЫЙ МЕТОД
+        self.get_log_level = self.settings.get_log_level
+        self.set_log_level = self.settings.set_log_level
 
         # Дополнительные методы
         self._backup_db = self._backup_db

@@ -16,7 +16,7 @@ from bot.services.crypto_wallets import wallet_manager, CryptoWalletManager
 from bot.services.payment_service import PaymentService
 from bot.services.order_service import OrderService
 from bot.services.admin_order_service import AdminOrderService
-from bot.keyboards import admin_order_keyboard
+from bot.keyboards import admin_order_keyboard, manual_pending_keyboard, auto_pending_keyboard, receipt_received_keyboard
 from bot.admin.main import is_admin, notify_admins, send_receipt
 from bot.admin.states import AdminStates
 from bot.config.settings import config
@@ -28,10 +28,13 @@ router = Router()
 @router.callback_query(F.data == "admin_orders_menu")
 async def admin_orders_menu(callback: CallbackQuery):
     """Меню управления заявками."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
+        logger.warning(f"[ADMIN {admin_id}] Попытка доступа без прав")
         return
 
+    logger.info(f"[ADMIN {admin_id}] Открыто меню управления заявками")
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="⏳ Ожидают оплаты", callback_data="admin_orders_pending")
     keyboard.button(text="💳 На проверке", callback_data="admin_orders_paid")
@@ -53,15 +56,18 @@ async def admin_orders_menu(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_orders_pending")
 async def admin_orders_pending(callback: CallbackQuery):
     """Список заявок, ожидающих оплаты (статус pending)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Запрос списка ожидающих заявок")
     orders = await db.get_pending_orders()
     pending_orders = [o for o in orders if o.status == 'pending']
 
     if not pending_orders:
         await callback.answer("Нет ожидающих заявок", show_alert=True)
+        logger.info(f"[ADMIN {admin_id}] Нет ожидающих заявок")
         return
 
     text = f"⏳ <b>Ожидают оплаты ({len(pending_orders)}):</b>\n\n"
@@ -87,15 +93,18 @@ async def admin_orders_pending(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_orders_paid")
 async def admin_orders_paid(callback: CallbackQuery):
     """Список заявок на проверке (статус paid)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Запрос списка заявок на проверке")
     orders = await db.get_pending_orders()
     paid_orders = [o for o in orders if o.status == 'paid']
 
     if not paid_orders:
         await callback.answer("Нет заявок на проверке", show_alert=True)
+        logger.info(f"[ADMIN {admin_id}] Нет заявок на проверке")
         return
 
     text = f"💳 <b>На проверке оплаты ({len(paid_orders)}):</b>\n\n"
@@ -121,15 +130,18 @@ async def admin_orders_paid(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_orders_completed")
 async def admin_orders_completed(callback: CallbackQuery):
     """Список выполненных заявок (последние 20)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Запрос списка выполненных заявок")
     orders = await db.get_all_orders(limit=20)
     completed_orders = [o for o in orders if o.status == 'completed']
 
     if not completed_orders:
         await callback.answer("Нет выполненных заявок", show_alert=True)
+        logger.info(f"[ADMIN {admin_id}] Нет выполненных заявок")
         return
 
     text = f"✅ <b>Выполненные заявки (последние 20):</b>\n\n"
@@ -151,15 +163,18 @@ async def admin_orders_completed(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_orders_cancelled")
 async def admin_orders_cancelled(callback: CallbackQuery):
     """Список отменённых заявок (последние 20)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Запрос списка отменённых заявок")
     orders = await db.get_all_orders(limit=20)
     cancelled_orders = [o for o in orders if o.status == 'cancelled']
 
     if not cancelled_orders:
         await callback.answer("Нет отменённых заявок", show_alert=True)
+        logger.info(f"[ADMIN {admin_id}] Нет отменённых заявок")
         return
 
     text = f"❌ <b>Отменённые заявки (последние 20):</b>\n\n"
@@ -181,82 +196,94 @@ async def admin_orders_cancelled(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_orders_search")
 async def admin_orders_search(callback: CallbackQuery, state: FSMContext):
     """Начало поиска заявки по ID."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Начало поиска заявки")
     await state.set_state(AdminStates.searching_order)
-    await callback.message.answer(
-        "🔍 Введите номер заявки (ID):"
-    )
+    await callback.message.answer("🔍 Введите номер заявки (ID):")
     await callback.answer()
 
 
 @router.message(AdminStates.searching_order)
 async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bot):
     """Поиск заявки по введённому ID."""
+    admin_id = message.from_user.id
     try:
         order_id = int(message.text.strip())
-        order = await db.get_order(order_id)
-        if not order:
-            await message.answer("❌ Заявка с таким ID не найдена.")
-        else:
-            if order.bank_receipt:
-                await send_receipt(
-                    chat_id=message.chat.id,
-                    file_path=order.bank_receipt,
-                    caption=f"🧾 Чек по заявке #{order.id}",
-                    bot=bot
-                )
-
-            safe_username = html.escape(order.username) if order.username else 'N/A'
-            safe_address = html.escape(order.crypto_address)
-            safe_tx_hash = html.escape(order.tx_hash) if order.tx_hash else ''
-
-            text = (
-                f"📋 <b>Заявка #{order.id}</b>\n\n"
-                f"Пользователь: @{safe_username} (ID: {order.user_id})\n"
-                f"Криптовалюта: {order.crypto_type}\n"
-                f"Сумма RUB: {order.amount_rub:,.0f} ₽\n"
-                f"Сумма крипты: {order.amount_crypto:.8f}\n"
-                f"Курс: {order.rate:,.0f} ₽\n"
-                f"Комиссия: {order.fee_percent}%\n"
-                f"Статус: {order.status}\n"
-                f"Создана: {order.created_at}\n"
-                f"Кошелёк: <code>{safe_address}</code>\n"
-            )
-            if order.paid_at:
-                text += f"Оплачена: {order.paid_at}\n"
-            if order.completed_at:
-                text += f"Завершена: {order.completed_at}\n"
-            if order.tx_hash:
-                text += f"Хеш транзакции: <code>{safe_tx_hash}</code>\n"
-
-            keyboard = InlineKeyboardBuilder()
-            if order.status == 'paid':
-                keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
-                keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
-            elif order.status == 'pending':
-                keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
-                keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
-            keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order.id}")
-            keyboard.button(text="🔙 Назад", callback_data="admin_orders_menu")
-            keyboard.adjust(1)
-
-            await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+        logger.info(f"[ADMIN {admin_id}] Поиск заявки #{order_id}")
     except ValueError:
+        logger.warning(f"[ADMIN {admin_id}] Некорректный ввод ID: {message.text}")
         await message.answer("❌ Введите корректный числовой ID.")
+        await state.clear()
+        return
 
+    order = await db.get_order(order_id)
+    if not order:
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
+        await message.answer("❌ Заявка с таким ID не найдена.")
+        await state.clear()
+        return
+
+    logger.info(f"[ADMIN {admin_id}] Найдена заявка #{order_id}, статус {order.status}")
+    if order.bank_receipt:
+        await send_receipt(
+            chat_id=message.chat.id,
+            file_path=order.bank_receipt,
+            caption=f"🧾 Чек по заявке #{order.id}",
+            bot=bot
+        )
+        logger.info(f"[ADMIN {admin_id}] Отправлен чек по заявке #{order_id}")
+
+    safe_username = html.escape(order.username) if order.username else 'N/A'
+    safe_address = html.escape(order.crypto_address)
+    safe_tx_hash = html.escape(order.tx_hash) if order.tx_hash else ''
+
+    text = (
+        f"📋 <b>Заявка #{order.id}</b>\n\n"
+        f"Пользователь: @{safe_username} (ID: {order.user_id})\n"
+        f"Криптовалюта: {order.crypto_type}\n"
+        f"Сумма RUB: {order.amount_rub:,.0f} ₽\n"
+        f"Сумма крипты: {order.amount_crypto:.8f}\n"
+        f"Курс: {order.rate:,.0f} ₽\n"
+        f"Комиссия: {order.fee_percent}%\n"
+        f"Статус: {order.status}\n"
+        f"Создана: {order.created_at}\n"
+        f"Кошелёк: <code>{safe_address}</code>\n"
+    )
+    if order.paid_at:
+        text += f"Оплачена: {order.paid_at}\n"
+    if order.completed_at:
+        text += f"Завершена: {order.completed_at}\n"
+    if order.tx_hash:
+        text += f"Хеш транзакции: <code>{safe_tx_hash}</code>\n"
+
+    keyboard = InlineKeyboardBuilder()
+    if order.status == 'paid':
+        keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
+        keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
+    elif order.status == 'pending':
+        keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
+        keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
+    keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order.id}")
+    keyboard.button(text="🔙 Назад", callback_data="admin_orders_menu")
+    keyboard.adjust(1)
+
+    await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await state.clear()
 
 
 @router.callback_query(F.data == "admin_orders_clear_all")
 async def admin_orders_clear_confirm(callback: CallbackQuery):
     """Подтверждение удаления всех заявок."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Запрос на очистку всех заявок")
     text = (
         "⚠️ <b>Очистка всех заявок</b>\n\n"
         "Это удалит ВСЕ заявки из базы данных, включая ожидающие, выполненные и отменённые.\n"
@@ -276,10 +303,12 @@ async def admin_orders_clear_confirm(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_orders_clear_execute")
 async def admin_orders_clear_execute(callback: CallbackQuery):
     """Исполнение удаления всех заявок."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    logger.info(f"[ADMIN {admin_id}] Выполнение очистки всех заявок")
     await db.clear_all_orders()
     await callback.answer("✅ Все заявки удалены", show_alert=True)
     await admin_orders_menu(callback)
@@ -288,15 +317,18 @@ async def admin_orders_clear_execute(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("admin_order_manage_"))
 async def admin_order_manage(callback: CallbackQuery, bot: Bot):
     """Показать детали конкретной заявки и кнопки управления."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[3])
-    order = await db.get_order(order_id)
+    logger.info(f"[ADMIN {admin_id}] Просмотр деталей заявки #{order_id}")
 
+    order = await db.get_order(order_id)
     if not order:
         await callback.answer("❌ Заявка не найдена", show_alert=True)
+        logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
         return
 
     if order.bank_receipt:
@@ -306,6 +338,7 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
             caption=f"🧾 Чек по заявке #{order.id}",
             bot=bot
         )
+        logger.info(f"[ADMIN {admin_id}] Отправлен чек по заявке #{order_id}")
 
     safe_username = html.escape(order.username) if order.username else 'N/A'
     safe_address = html.escape(order.crypto_address)
@@ -348,13 +381,15 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("admin_order_check_"))
 async def admin_order_check(callback: CallbackQuery, bot: Bot):
     """Проверка конкретной заявки со статусом paid (после загрузки чека)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[3])
-    order = await db.get_order(order_id)
+    logger.info(f"[ADMIN {admin_id}] Проверка заявки #{order_id} (статус paid)")
 
+    order = await db.get_order(order_id)
     if not order:
         await callback.answer("Заявка не найдена", show_alert=True)
         return
@@ -366,6 +401,7 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
             caption=f"🧾 Чек по заявке #{order.id}",
             bot=bot
         )
+        logger.info(f"[ADMIN {admin_id}] Отправлен чек по заявке #{order_id}")
 
     safe_username = html.escape(order.username) if order.username else 'N/A'
     safe_address = html.escape(order.crypto_address)
@@ -391,23 +427,24 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
     await callback.answer()
 
 
-# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ (ограничение напоминаний) ==========
 @router.callback_query(F.data.startswith("admin_request_receipt_"))
 async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
     """Отправить пользователю напоминание об оплате (с проверкой лимита)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[3])
-    order = await db.get_order(order_id)
+    logger.info(f"[ADMIN {admin_id}] Запрос чека (напоминание) для заявки #{order_id}")
 
+    order = await db.get_order(order_id)
     if not order:
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    # Проверяем количество уже отправленных напоминаний
     if order.reminder_count >= 3:
+        logger.info(f"[ADMIN {admin_id}] Максимальное количество напоминаний (3) уже отправлено для заявки #{order_id}")
         await callback.answer("❌ Максимальное количество напоминаний (3) уже отправлено.", show_alert=True)
         return
 
@@ -427,24 +464,26 @@ async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
             ).as_markup(),
             parse_mode="HTML"
         )
-        # Увеличиваем счётчик напоминаний
         await db.orders.increment_reminder_count(order_id)
+        logger.info(f"[ADMIN {admin_id}] Напоминание отправлено пользователю {order.user_id} по заявке #{order_id}")
         await callback.answer("✅ Напоминание отправлено клиенту.")
     except Exception as e:
-        logger.error(f"Ошибка отправки напоминания: {e}")
+        logger.error(f"[ADMIN {admin_id}] Ошибка отправки напоминания: {e}")
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("admin_msg_"))
 async def admin_msg_start(callback: CallbackQuery, state: FSMContext):
     """Начать отправку сообщения клиенту."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[2])
-    order = await db.get_order(order_id)
+    logger.info(f"[ADMIN {admin_id}] Начало отправки сообщения клиенту по заявке #{order_id}")
 
+    order = await db.get_order(order_id)
     if not order:
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
@@ -452,17 +491,17 @@ async def admin_msg_start(callback: CallbackQuery, state: FSMContext):
     await state.update_data(msg_user_id=order.user_id, msg_order_id=order_id)
     await state.set_state(AdminStates.sending_message_to_user)
 
-    await callback.message.answer(
-        "💬 Введите сообщение для отправки клиенту (или отправьте /cancel для отмены):"
-    )
+    await callback.message.answer("💬 Введите сообщение для отправки клиенту (или отправьте /cancel для отмены):")
     await callback.answer()
 
 
 @router.message(AdminStates.sending_message_to_user)
 async def admin_send_message_to_user(message: Message, state: FSMContext, bot: Bot):
     """Отправка введённого сообщения клиенту."""
+    admin_id = message.from_user.id
     if message.text == "/cancel":
         await message.answer("❌ Отправка сообщения отменена.")
+        logger.info(f"[ADMIN {admin_id}] Отправка сообщения отменена")
         await state.clear()
         return
 
@@ -471,6 +510,7 @@ async def admin_send_message_to_user(message: Message, state: FSMContext, bot: B
     order_id = data.get('msg_order_id')
 
     if not user_id or not order_id:
+        logger.warning(f"[ADMIN {admin_id}] Ошибка: данные не найдены")
         await message.answer("❌ Ошибка: данные не найдены. Попробуйте снова.")
         await state.clear()
         return
@@ -482,15 +522,14 @@ async def admin_send_message_to_user(message: Message, state: FSMContext, bot: B
             f"💬 <b>Сообщение от администратора по заявке #{order_id}:</b>\n\n{safe_text}",
             parse_mode="HTML"
         )
+        logger.info(f"[ADMIN {admin_id}] Сообщение отправлено пользователю {user_id} по заявке #{order_id}")
         await message.answer("✅ Сообщение успешно отправлено клиенту.")
     except Exception as e:
-        logger.error(f"Ошибка отправки сообщения: {e}")
+        logger.error(f"[ADMIN {admin_id}] Ошибка отправки сообщения: {e}")
         await message.answer(f"❌ Не удалось отправить сообщение: {e}")
 
     await state.clear()
 
-
-# ==================== ЛОГИКА ПОДТВЕРЖДЕНИЯ ====================
 
 @router.callback_query(F.data.startswith("admin_approve_"))
 async def admin_approve_order(
@@ -500,22 +539,26 @@ async def admin_approve_order(
     admin_order_service: AdminOrderService
 ):
     """Подтверждение заявки (авто или ручной режим)."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[2])
+    logger.info(f"[ADMIN {admin_id}] Нажата кнопка 'Подтвердить оплату' для заявки #{order_id}")
+
     payment_mode = await db.get_payment_mode()
 
     if payment_mode == 'auto':
-        # Автоматический режим: отправка крипты через сервис
-        result = await admin_order_service.approve_order_auto(order_id, callback.from_user.id)
+        result = await admin_order_service.approve_order_auto(order_id, admin_id)
         if not result['success']:
+            logger.warning(f"[ADMIN {admin_id}] Ошибка подтверждения заявки #{order_id}: {result['error']}")
             await callback.answer(f"❌ {result['error']}", show_alert=True)
             return
 
         order = result['order']
         tx_hash = result['tx_hash']
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} подтверждена, tx_hash: {tx_hash}")
 
         explorer_url = None
         if order.crypto_type == 'LTC':
@@ -546,10 +589,11 @@ async def admin_approve_order(
 
         try:
             await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
+            logger.info(f"Пользователь {order.user_id} уведомлен о выполнении заявки #{order_id}")
         except Exception as e:
             logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
-        await notify_admins(bot, admin_text, exclude_id=callback.from_user.id)
+        await notify_admins(bot, admin_text, exclude_id=admin_id)
 
         result_text = (
             f"✅ <b>Заявка #{order_id} выполнена!</b>\n\n"
@@ -573,10 +617,11 @@ async def admin_approve_order(
             await callback.answer("❌ Заявка не найдена", show_alert=True)
             return
         if order.status != 'paid':
+            logger.warning(f"[ADMIN {admin_id}] Попытка подтвердить заявку #{order_id} со статусом {order.status}, требуется 'paid'")
             await callback.answer("❌ Заявка не в статусе 'оплачена'. Чек ещё не получен.", show_alert=True)
             return
 
-        await state.update_data(confirming_order_id=order_id, confirming_admin=callback.from_user.id)
+        await state.update_data(confirming_order_id=order_id, confirming_admin=admin_id)
 
         user_text = (
             f"✅ <b>Ваш платёж по заявке #{order_id} подтверждён!</b>\n\n"
@@ -586,6 +631,7 @@ async def admin_approve_order(
         )
         try:
             await bot.send_message(order.user_id, user_text, parse_mode="HTML")
+            logger.info(f"Пользователь {order.user_id} уведомлен о подтверждении оплаты по заявке #{order_id}")
         except Exception as e:
             logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
@@ -605,22 +651,26 @@ async def admin_approve_order(
 @router.message(AdminStates.waiting_tx_hash)
 async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, admin_order_service: AdminOrderService):
     """Ввод хеша транзакции в ручном режиме."""
+    admin_id = message.from_user.id
     data = await state.get_data()
     order_id = data.get('confirming_order_id')
-    admin_id = data.get('confirming_admin')
+    confirming_admin = data.get('confirming_admin')
 
-    if not order_id or admin_id != message.from_user.id:
+    if not order_id or confirming_admin != admin_id:
+        logger.warning(f"[ADMIN {admin_id}] Ошибка: данные не найдены или доступ запрещён")
         await message.answer("❌ Ошибка: данные не найдены или доступ запрещён.")
         await state.clear()
         return
 
     if message.text == "/cancel":
+        logger.info(f"[ADMIN {admin_id}] Ввод хеша отменён для заявки #{order_id}")
         await message.answer("❌ Ввод хеша отменён.")
         await state.clear()
         return
 
     tx_hash = message.text.strip()
     if len(tx_hash) < 10 or len(tx_hash) > 100:
+        logger.warning(f"[ADMIN {admin_id}] Некорректный хеш: {tx_hash}")
         await message.answer("❌ Некорректный хеш. Введите ещё раз (или /cancel для отмены):")
         return
 
@@ -630,11 +680,14 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
         await state.clear()
         return
 
-    success = await admin_order_service.complete_order_with_tx_hash(order_id, tx_hash, message.from_user.id)
+    success = await admin_order_service.complete_order_with_tx_hash(order_id, tx_hash, admin_id)
     if not success:
+        logger.error(f"[ADMIN {admin_id}] Не удалось завершить заявку #{order_id} с хешем {tx_hash}")
         await message.answer("❌ Не удалось завершить заявку.")
         await state.clear()
         return
+
+    logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, хеш {tx_hash} сохранён")
 
     explorer_url = None
     if order.crypto_type == 'LTC':
@@ -652,6 +705,7 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
 
     try:
         await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
+        logger.info(f"Пользователь {order.user_id} уведомлён об отправке по заявке #{order_id}")
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
@@ -661,26 +715,24 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
 
 @router.callback_query(F.data.startswith("admin_manual_complete_"))
 async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_service: AdminOrderService):
-    """
-    Принудительное завершение заявки без хеша (для экстренных случаев).
-    Используется только когда отправка крипты не удалась, но деньги всё равно нужно зачислить.
-    """
-    if not is_admin(callback.from_user.id):
+    """Принудительное завершение заявки без хеша (для экстренных случаев)."""
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[3])
-    order = await db.get_order(order_id)
+    logger.warning(f"[ADMIN {admin_id}] Принудительное завершение заявки #{order_id} без хеша")
 
-    # Завершаем без хеша (ручное вмешательство)
+    order = await db.get_order(order_id)
     fee_amount = order.amount_rub * order.fee_percent / 100
 
     async with db.uow() as uow:
         await uow.orders.update_order_status(
             order_id,
             "completed",
-            f"Подтверждено админом {callback.from_user.id} вручную (после ошибки отправки)",
-            callback.from_user.id
+            f"Подтверждено админом {admin_id} вручную (после ошибки отправки)",
+            admin_id
         )
         await uow.finance.add_financial_record(
             record_type='income',
@@ -688,7 +740,7 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
             amount=fee_amount,
             description=f'Комиссия с заявки #{order_id}',
             order_id=order_id,
-            created_by=callback.from_user.id
+            created_by=admin_id
         )
         await uow.commit()
 
@@ -699,6 +751,7 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
     )
     try:
         await bot.send_message(order.user_id, user_text, parse_mode="HTML")
+        logger.info(f"Пользователь {order.user_id} уведомлён о принудительном завершении заявки #{order_id}")
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
@@ -712,13 +765,15 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
 @router.callback_query(F.data.startswith("admin_reject_"))
 async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_service: AdminOrderService):
     """Отклонение заявки."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[2])
+    logger.info(f"[ADMIN {admin_id}] Отклонение заявки #{order_id}")
 
-    await admin_order_service.reject_order(order_id, callback.from_user.id)
+    await admin_order_service.reject_order(order_id, admin_id)
 
     order = await db.get_order(order_id)
 
@@ -730,6 +785,7 @@ async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_serv
             f"По вопросам обратитесь в поддержку.",
             parse_mode="HTML"
         )
+        logger.info(f"Пользователь {order.user_id} уведомлен об отклонении заявки #{order_id}")
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
@@ -744,20 +800,26 @@ async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_serv
     await callback.answer("Заявка отклонена")
 
 
-# ==================== ВВОД РЕКВИЗИТОВ В РУЧНОМ РЕЖИМЕ ====================
-
 @router.callback_query(F.data.startswith("admin_enter_payment_details_"))
 async def admin_enter_payment_details_start(callback: CallbackQuery, state: FSMContext):
     """Начало ввода реквизитов для ручного режима."""
-    if not is_admin(callback.from_user.id):
+    admin_id = callback.from_user.id
+    if not is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[4])
-    order = await db.get_order(order_id)
+    logger.info(f"[ADMIN {admin_id}] Начало ввода реквизитов для заявки #{order_id}")
 
+    order = await db.get_order(order_id)
     if not order:
+        logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
         await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    if order.status != 'pending':
+        logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} имеет статус {order.status}, требуется pending")
+        await callback.answer("❌ Эта заявка уже обработана или не ожидает реквизитов.", show_alert=True)
         return
 
     await state.update_data(manual_order_id=order_id)
@@ -780,7 +842,9 @@ async def admin_enter_payment_details_finish(
     admin_order_service: AdminOrderService
 ):
     """Сохранение введённых реквизитов и отправка пользователю."""
+    admin_id = message.from_user.id
     if message.text == "/cancel":
+        logger.info(f"[ADMIN {admin_id}] Ввод реквизитов отменён")
         await message.answer("❌ Ввод реквизитов отменён.")
         await state.clear()
         return
@@ -788,17 +852,21 @@ async def admin_enter_payment_details_finish(
     data = await state.get_data()
     order_id = data.get('manual_order_id')
     if not order_id:
+        logger.warning(f"[ADMIN {admin_id}] Ошибка: заявка не найдена в состоянии")
         await message.answer("❌ Ошибка: заявка не найдена. Попробуйте снова.")
         await state.clear()
         return
 
     order = await db.get_order(order_id)
     if not order:
+        logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не существует")
         await message.answer("❌ Заявка не существует.")
         await state.clear()
         return
 
     details = message.text
+    logger.info(f"[ADMIN {admin_id}] Введены реквизиты для заявки #{order_id}: {details[:50]}...")
+
     await admin_order_service.send_payment_details(order_id, details, order.user_id)
     success = await payment_service.process_manual_payment_details(
         order_id=order_id,
@@ -809,8 +877,10 @@ async def admin_enter_payment_details_finish(
     )
     if success:
         safe_username = html.escape(order.username) if order.username else str(order.user_id)
+        logger.info(f"[ADMIN {admin_id}] Реквизиты успешно отправлены пользователю {order.user_id}")
         await message.answer(f"✅ Реквизиты отправлены пользователю @{safe_username}.")
     else:
+        logger.error(f"[ADMIN {admin_id}] Не удалось отправить реквизиты пользователю {order.user_id}")
         await message.answer("❌ Не удалось отправить реквизиты.")
 
     await state.clear()

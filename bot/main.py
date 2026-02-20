@@ -1,3 +1,4 @@
+# bot/main.py
 """Основной файл Telegram бота обменника криптовалют"""
 
 import asyncio
@@ -7,6 +8,7 @@ import sys
 import time
 from datetime import datetime
 import traceback
+from logging.handlers import RotatingFileHandler
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -35,10 +37,13 @@ from bot.admin import router as admin_router
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(line_buffering=True)
 
+# ==================== НАСТРОЙКА ЛОГИРОВАНИЯ (временная, потом будет заменена из БД) ====================
+# Сначала настраиваем базовое логирование, чтобы видеть процесс загрузки
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
 logger = logging.getLogger(__name__)
 
 # Создаём сессию с увеличенным таймаутом
@@ -67,6 +72,7 @@ async def services_middleware(handler, event, data):
     data['admin_user_service'] = admin_user_service
     data['admin_wallet_service'] = admin_wallet_service
     data['admin_finance_service'] = admin_finance_service
+    data['bot'] = bot
     return await handler(event, data)
 
 # ==================== МИДЛВАРИ ДЛЯ ПРОВЕРКИ БАНА И АКТИВНОСТИ ====================
@@ -96,7 +102,7 @@ async def update_activity_middleware(handler, event, data):
         asyncio.create_task(db.users.update_last_activity(user_id))
     return await handler(event, data)
 
-# Регистрируем мидлвари (порядок важен: сервисы должны быть доступны в проверке бана)
+# Регистрируем мидлвари
 dp.message.middleware(services_middleware)
 dp.callback_query.middleware(services_middleware)
 dp.message.middleware(check_banned_middleware)
@@ -128,24 +134,69 @@ async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentServic
 
 async def on_startup():
     start_time = time.time()
-    logger.info("🚀 Запуск бота, инициализация...")
+    logger.info("[START] Запуск бота, инициализация...")
 
     # Создаём таблицы, если их нет (синхронно, в потоке)
     def create_tables():
         init_db_sync()
-        logger.info("✅ Таблицы созданы/проверены")
+        logger.info("[OK] Таблицы созданы/проверены")
 
     await asyncio.to_thread(create_tables)
 
     # Подключаемся к БД
     await db.connect()
-    logger.info("✅ Подключение к базе данных установлено")
+    logger.info("[OK] Подключение к базе данных установлено")
+
+    # Получаем уровень логирования из БД и перенастраиваем корневой логгер
+    try:
+        # Проверяем наличие метода get_log_level (на случай, если БД ещё не обновлена)
+        if hasattr(db, 'get_log_level'):
+            db_log_level = await db.get_log_level()
+            log_level = getattr(logging, db_log_level.upper(), logging.INFO)
+        else:
+            logger.warning("Метод get_log_level не найден в db. Использую INFO.")
+            log_level = logging.INFO
+            db_log_level = "INFO"
+    except Exception as e:
+        logger.warning(f"Не удалось получить уровень логирования из БД: {e}. Использую INFO.")
+        log_level = logging.INFO
+        db_log_level = "INFO"
+
+    # Настройка форматтера и обработчиков
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # чтобы все сообщения доходили до обработчиков
+
+    # Очистим старые обработчики, если они были (например, от basicConfig)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Создаём новые обработчики с нужным уровнем
+    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Консольный вывод (может быть проблема с кодировкой на Windows, поэтому эмодзи заменены на текст)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    console_handler.setLevel(log_level)
+
+    # Файловый вывод с ротацией (10 MB, 5 бэкапов)
+    file_handler = RotatingFileHandler('bot.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.DEBUG)  # в файл пишем всё
+
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+    # Устанавливаем уровни для шумных библиотек
+    logging.getLogger('aiogram').setLevel(logging.WARNING)
+    logging.getLogger('aiohttp').setLevel(logging.WARNING)
+
+    logger.info(f"Уровень логирования установлен: {db_log_level} (из БД)")
 
     new_version = await db.increment_bot_version()
-    logger.info(f"✅ Версия бота: {new_version}")
+    logger.info(f"[OK] Версия бота: {new_version}")
 
     elapsed = time.time() - start_time
-    logger.info(f"⏱ Время загрузки: {elapsed:.2f} секунд")
+    logger.info(f"[TIME] Время загрузки: {elapsed:.2f} секунд")
 
     for admin_id in config.ADMIN_IDS:
         try:
@@ -154,7 +205,8 @@ async def on_startup():
                 f"🤖 <b>Бот запущен!</b>\n\n"
                 f"Версия: {new_version}\n"
                 f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Загрузка: {elapsed:.2f} сек",
+                f"Загрузка: {elapsed:.2f} сек\n"
+                f"Уровень логов: {db_log_level}",
                 parse_mode="HTML"
             )
         except Exception as e:

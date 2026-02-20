@@ -279,8 +279,10 @@ class CryptoWalletManager:
 
     async def update_balance(self, wallet_id: int) -> Dict:
         """Обновить баланс конкретного кошелька через соответствующий сервис."""
+        logger.info(f"Обновление баланса кошелька #{wallet_id}")
         wallet = await db.get_wallet(wallet_id=wallet_id)
         if not wallet:
+            logger.warning(f"Кошелёк #{wallet_id} не найден")
             return {'success': False, 'error': 'Wallet not found'}
         try:
             if wallet.crypto_type == 'BTC':
@@ -293,13 +295,15 @@ class CryptoWalletManager:
             logger.info(f"Баланс кошелька {wallet.address}: {balance} {wallet.crypto_type}")
             return {'success': True, 'balance': balance}
         except Exception as e:
-            logger.error(f"Ошибка обновления баланса: {e}")
+            logger.error(f"Ошибка обновления баланса кошелька #{wallet_id}: {e}")
             return {'success': False, 'error': str(e)}
 
     async def check_sufficient_funds(self, crypto_type: str, amount: float) -> Tuple[bool, float]:
         """Проверить, достаточно ли средств на активном кошельке (с учётом комиссии)."""
+        logger.info(f"Проверка наличия средств для {crypto_type}, необходимо {amount}")
         wallet = await db.get_wallet(crypto_type=crypto_type)
         if not wallet:
+            logger.warning(f"Нет активного кошелька для {crypto_type}")
             return False, 0.0
         if crypto_type == 'BTC':
             balance = self.btc.get_balance(wallet.address)
@@ -309,9 +313,9 @@ class CryptoWalletManager:
             required = amount + 0.001
         else:
             return False, 0.0
+        logger.info(f"Баланс: {balance}, требуется: {required}")
         return balance >= required, balance
 
-    # ========== ИСПРАВЛЕННЫЙ МЕТОД (см. пункт 3) ==========
     async def send_transaction_real(self, order_id: int, crypto_type: str,
                                     to_address: str, amount: float,
                                     wallet: Optional[Wallet] = None) -> Dict:
@@ -323,9 +327,11 @@ class CryptoWalletManager:
         3. При успехе запись обновляется (статус 'broadcasted', tx_hash).
         4. При ошибке запись помечается как 'failed' с сохранением ошибки.
         """
+        logger.info(f"Запуск отправки криптовалюты по заявке #{order_id}, сумма {amount} {crypto_type}")
         if wallet is None:
             wallet = await db.get_wallet(crypto_type=crypto_type)
             if not wallet:
+                logger.error(f"Нет активного кошелька для {crypto_type}")
                 return {'success': False, 'error': f'Нет активного кошелька для {crypto_type}'}
 
         from_address = str(wallet.address).strip()
@@ -338,7 +344,7 @@ class CryptoWalletManager:
             if not private_key_wif:
                 return {'success': False, 'error': 'Пустой приватный ключ'}
         except Exception as e:
-            logger.error(f"Ошибка расшифровки ключа: {e}")
+            logger.error(f"Ошибка расшифровки ключа для кошелька #{wallet.id}: {e}")
             return {'success': False, 'error': f'Ошибка расшифровки ключа: {e}'}
 
         # ШАГ 1: Создаём запись транзакции в БД (статус pending)
@@ -349,6 +355,7 @@ class CryptoWalletManager:
             to_address=to_address,
             amount=amount
         )
+        logger.info(f"Создана запись транзакции #{tx_db_id} со статусом pending")
 
         max_retries = 3
         txid = None
@@ -384,6 +391,7 @@ class CryptoWalletManager:
                         status='failed',
                         error_message=str(e)
                     )
+                    logger.info(f"Статус транзакции #{tx_db_id} обновлён на failed")
                     return {'success': False, 'error': str(e)}
                 wait = 2 ** attempt
                 logger.warning(f"Попытка {attempt+1} не удалась: {e}, повтор через {wait} сек")
@@ -395,6 +403,7 @@ class CryptoWalletManager:
                 status='failed',
                 error_message='Не удалось отправить транзакцию после нескольких попыток'
             )
+            logger.info(f"Статус транзакции #{tx_db_id} обновлён на failed")
             return {'success': False, 'error': 'Не удалось отправить транзакцию после нескольких попыток'}
 
         # ШАГ 3: Обновляем запись транзакции (статус broadcasted, tx_hash)
@@ -405,17 +414,20 @@ class CryptoWalletManager:
             broadcasted_at=datetime.now().isoformat(),
             fee_paid=0
         )
+        logger.info(f"Статус транзакции #{tx_db_id} обновлён на broadcasted, tx_hash={txid}")
 
         asyncio.create_task(self.update_balance(wallet.id))
-        logger.info(f"✅ Транзакция сохранена в БД: {tx_db_id}")
+        logger.info(f"✅ Транзакция по заявке #{order_id} успешно отправлена, tx_hash={txid}")
         return {'success': True, 'tx_hash': txid}
 
     async def get_transaction_history(self, limit: int = 20) -> List:
         """Получить историю транзакций (последние limit)."""
+        logger.debug(f"Запрос истории транзакций, лимит {limit}")
         return await db.get_recent_crypto_transactions(limit)
 
     async def close(self):
         """Закрыть все сессии."""
+        logger.info("Закрытие сессий крипто-кошельков")
         if hasattr(self.ltc, 'close'):
             await self.ltc.close()
 

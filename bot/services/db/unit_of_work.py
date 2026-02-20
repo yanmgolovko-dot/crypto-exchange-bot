@@ -1,4 +1,5 @@
-"""Unit of Work для управления транзакциями"""
+# bot/services/db/unit_of_work.py
+"""Unit of Work для управления транзакциями."""
 
 from typing import Optional
 import logging
@@ -16,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class UnitOfWork:
+    """
+    Класс для группировки операций с БД в единую транзакцию.
+    Предоставляет доступ ко всем репозиториям и управляет commit/rollback.
+    Используется в сервисах для атомарных операций.
+    """
+
     def __init__(self, connection: DatabaseConnection):
         self._connection = connection
         self.users = UserRepository(connection)
@@ -25,20 +32,32 @@ class UnitOfWork:
         self.promo = PromoRepository(connection)
         self.finance = FinanceRepository(connection)
         self.settings = SettingsRepository(connection)
+        logger.debug("UnitOfWork инициализирован")
 
     async def __aenter__(self):
-        logger.debug("Starting transaction")
+        """Вход в контекстный менеджер – начало транзакции (логически)."""
+        logger.debug("Начало транзакции (UnitOfWork)")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """
+        Выход из контекстного менеджера.
+        Если было исключение – откат, иначе транзакция должна быть закоммичена явно.
+        """
         if exc_type is not None:
             await self.rollback()
-            logger.error(f"Transaction rolled back due to {exc_type.__name__}: {exc_val}")
+            logger.error(f"Транзакция откачена из-за {exc_type.__name__}: {exc_val}")
+        else:
+            # Если нет исключения, но commit не был вызван, можно выполнить rollback по умолчанию?
+            # Лучше требовать явный commit.
+            logger.debug("Выход из UnitOfWork без commit – предполагается явный commit до выхода")
 
     async def commit(self):
+        """Фиксация транзакции."""
         await self._connection.conn.commit()
-        logger.debug("Transaction committed")
+        logger.debug("Транзакция закоммичена")
 
     async def rollback(self):
+        """Откат транзакции."""
         await self._connection.conn.rollback()
-        logger.debug("Transaction rolled back")
+        logger.debug("Транзакция откачена")

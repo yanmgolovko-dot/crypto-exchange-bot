@@ -1,15 +1,24 @@
-"""Синхронная инициализация базы данных (создание таблиц и обновление схемы)"""
+# bot/services/db/init.py
+"""Синхронная инициализация базы данных (создание таблиц и обновление схемы)."""
 
 import sqlite3
 import os
+import logging
 from bot.config.settings import config
+
+logger = logging.getLogger(__name__)
 
 
 def init_db_sync():
-    """Создаёт таблицы, если их нет, и добавляет недостающие колонки (вызывается при запуске)"""
+    """
+    Создаёт таблицы, если их нет, и добавляет недостающие колонки (вызывается при запуске).
+    Выполняется синхронно в отдельном потоке при старте бота.
+    """
+    logger.info("Синхронная инициализация базы данных")
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     conn = sqlite3.connect(config.DB_PATH)
     c = conn.cursor()
+    logger.debug("Подключение к БД для инициализации установлено")
 
     # Таблица users
     c.execute("""
@@ -33,6 +42,7 @@ def init_db_sync():
             notifications_enabled BOOLEAN DEFAULT 1
         )
     """)
+    logger.debug("Таблица users проверена/создана")
 
     # Таблица exchange_orders
     c.execute("""
@@ -63,6 +73,7 @@ def init_db_sync():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
+    logger.debug("Таблица exchange_orders проверена/создана")
 
     # Таблица bank_details
     c.execute("""
@@ -80,6 +91,7 @@ def init_db_sync():
             added_by INTEGER
         )
     """)
+    logger.debug("Таблица bank_details проверена/создана")
 
     # Таблица promo_codes
     c.execute("""
@@ -97,6 +109,7 @@ def init_db_sync():
             description TEXT
         )
     """)
+    logger.debug("Таблица promo_codes проверена/создана")
 
     # Таблица promo_usage
     c.execute("""
@@ -111,6 +124,7 @@ def init_db_sync():
             UNIQUE(promo_id, user_id)
         )
     """)
+    logger.debug("Таблица promo_usage проверена/создана")
 
     # Таблица financial_records
     c.execute("""
@@ -127,6 +141,7 @@ def init_db_sync():
             FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
         )
     """)
+    logger.debug("Таблица financial_records проверена/создана")
 
     # Таблица system_settings
     c.execute("""
@@ -137,7 +152,9 @@ def init_db_sync():
             updated_by INTEGER
         )
     """)
+    # Вставляем начальную запись для payment_mode, если её нет
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('payment_mode', 'auto')")
+    logger.debug("Таблица system_settings проверена/создана, добавлен payment_mode по умолчанию")
 
     # Таблица user_sessions
     c.execute("""
@@ -152,6 +169,7 @@ def init_db_sync():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
+    logger.debug("Таблица user_sessions проверена/создана")
 
     # Таблица referral_earnings
     c.execute("""
@@ -169,6 +187,7 @@ def init_db_sync():
             FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
         )
     """)
+    logger.debug("Таблица referral_earnings проверена/создана")
 
     # Таблица exchange_wallets
     c.execute("""
@@ -188,6 +207,7 @@ def init_db_sync():
             total_received REAL DEFAULT 0
         )
     """)
+    logger.debug("Таблица exchange_wallets проверена/создана")
 
     # Таблица crypto_transactions
     c.execute("""
@@ -211,8 +231,9 @@ def init_db_sync():
             FOREIGN KEY (wallet_id) REFERENCES exchange_wallets(id)
         )
     """)
+    logger.debug("Таблица crypto_transactions проверена/создана")
 
-    # Индексы
+    # Индексы для ускорения запросов
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON exchange_orders(user_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON exchange_orders(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_created ON exchange_orders(created_at)")
@@ -224,18 +245,23 @@ def init_db_sync():
     c.execute("CREATE INDEX IF NOT EXISTS idx_crypto_tx_status ON crypto_transactions(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_wallets_type ON exchange_wallets(crypto_type)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_wallets_active ON exchange_wallets(is_active)")
+    logger.debug("Индексы проверены/созданы")
 
     # Добавляем недостающие колонки (миграция для reminder_count и last_reminder_at)
+    # Эти колонки могли быть добавлены позже, поэтому используем try-except
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN reminder_count INTEGER DEFAULT 0")
+        logger.info("Колонка reminder_count добавлена в exchange_orders")
     except sqlite3.OperationalError:
         # колонка уже существует
-        pass
+        logger.debug("Колонка reminder_count уже существует")
 
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN last_reminder_at TIMESTAMP")
+        logger.info("Колонка last_reminder_at добавлена в exchange_orders")
     except sqlite3.OperationalError:
-        pass
+        logger.debug("Колонка last_reminder_at уже существует")
 
     conn.commit()
     conn.close()
+    logger.info("Инициализация БД завершена")

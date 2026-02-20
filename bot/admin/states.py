@@ -1,3 +1,4 @@
+# bot/admin/states.py
 from aiogram.fsm.state import State, StatesGroup
 
 class AdminStates(StatesGroup):
@@ -22,7 +23,7 @@ class AdminStates(StatesGroup):
     banning_user = State()
     banning_reason = State()
     unbanning_user = State()
-    searching_user = State()          # состояние для поиска пользователя
+    searching_user = State()
 
     # Рассылка
     sending_broadcast = State()
@@ -44,7 +45,7 @@ class AdminStates(StatesGroup):
     # Ручной режим (ввод реквизитов)
     entering_manual_payment_details = State()
 
-    # Ввод хеша транзакции
+    # Ввод хеша транзакции (добавлено)
     waiting_tx_hash = State()
 
     # Поиск заявки

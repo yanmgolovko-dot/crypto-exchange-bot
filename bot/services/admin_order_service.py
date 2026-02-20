@@ -19,7 +19,6 @@ class AdminOrderService:
         self.db = db
         self.wallet_manager = wallet_manager
 
-    # ========== ИСПРАВЛЕННЫЙ МЕТОД (см. пункт 4) ==========
     async def approve_order_auto(
         self,
         order_id: int,
@@ -30,17 +29,19 @@ class AdminOrderService:
         Выбирает активный кошелёк с достаточным балансом и отправляет криптовалюту.
         **Добавлена атомарная блокировка заявки через статус 'processing' для предотвращения двойной отправки.**
         """
+        logger.info(f"[ADMIN {admin_id}] Автоматическое подтверждение заявки #{order_id}")
+
         order = await self.db.get_order(order_id)
         if not order:
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
             return {'success': False, 'error': 'Заявка не найдена'}
 
-        # 1. Проверяем, что заявка ещё не завершена и не обрабатывается
         if order.status != 'paid':
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} имеет статус {order.status}, требуется paid")
             return {'success': False, 'error': f'Заявка не в статусе "оплачена". Текущий статус: {order.status}'}
 
         # Атомарно пытаемся заблокировать заявку (обновить статус на processing)
         async with self.db.uow() as uow:
-            # Пытаемся обновить только если статус всё ещё 'paid'
             cursor = await uow._connection.conn.execute("""
                 UPDATE exchange_orders
                 SET status = 'processing'
@@ -50,19 +51,20 @@ class AdminOrderService:
             row = await cursor.fetchone()
             if not row:
                 await uow.rollback()
+                logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} уже обрабатывается")
                 return {'success': False, 'error': 'Заявка уже обрабатывается или была изменена'}
             await uow.commit()
+        logger.debug(f"[ADMIN {admin_id}] Заявка #{order_id} заблокирована (статус processing)")
 
-        # Получаем все активные кошельки данного типа
         wallets = await self.db.get_all_wallets(crypto_type=order.crypto_type, include_inactive=False)
         if not wallets:
-            # Возвращаем статус обратно в paid (снимаем блокировку)
+            logger.warning(f"[ADMIN {admin_id}] Нет активных кошельков {order.crypto_type} для заявки #{order_id}")
             await self.db.update_order_status(order_id, 'paid', 'Нет кошельков, блокировка снята')
             return {'success': False, 'error': f'Нет активных кошельков {order.crypto_type}'}
 
-        # Определяем примерную комиссию для проверки
         fee_estimate = 0.001 if order.crypto_type == 'LTC' else 0.0001
         required_amount = order.amount_crypto + fee_estimate
+        logger.debug(f"Необходимая сумма с учётом комиссии: {required_amount} {order.crypto_type}")
 
         selected_wallet = None
         for wallet in wallets:
@@ -77,14 +79,13 @@ class AdminOrderService:
                 break
 
         if not selected_wallet:
-            # Снимаем блокировку
+            logger.warning(f"[ADMIN {admin_id}] Недостаточно средств для заявки #{order_id}")
             await self.db.update_order_status(order_id, 'paid', 'Недостаточно средств, блокировка снята')
             return {
                 'success': False,
                 'error': f'Нет кошельков с достаточным балансом. Требуется {required_amount:.8f} {order.crypto_type}'
             }
 
-        # Отправляем транзакцию, передавая выбранный кошелёк
         tx_result = await self.wallet_manager.send_transaction_real(
             order_id=order_id,
             crypto_type=order.crypto_type,
@@ -94,13 +95,13 @@ class AdminOrderService:
         )
 
         if not tx_result['success']:
-            # Возвращаем статус в paid при ошибке
+            logger.error(f"[ADMIN {admin_id}] Ошибка отправки транзакции по заявке #{order_id}: {tx_result.get('error')}")
             await self.db.update_order_status(order_id, 'paid', f'Ошибка отправки: {tx_result.get("error")}')
             return {'success': False, 'error': tx_result.get('error', 'Неизвестная ошибка')}
 
         tx_hash = tx_result.get('tx_hash', 'N/A')
+        logger.info(f"[ADMIN {admin_id}] Транзакция отправлена, tx_hash={tx_hash}")
 
-        # Финальное обновление (заявка переводится в completed)
         async with self.db.uow() as uow:
             await uow.orders.update_order_status(
                 order_id,
@@ -117,6 +118,7 @@ class AdminOrderService:
                 created_by=admin_id
             )
             await uow.commit()
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, комиссия записана")
 
         return {
             'success': True,
@@ -129,8 +131,10 @@ class AdminOrderService:
         Подготовка к ручному подтверждению (после получения оплаты).
         Просто проверяет, что заявка существует и имеет статус 'paid'.
         """
+        logger.info(f"[ADMIN {admin_id}] Ручное подтверждение заявки #{order_id}")
         order = await self.db.get_order(order_id)
         if not order or order.status != 'paid':
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не в статусе paid")
             return False
         return True
 
@@ -144,8 +148,10 @@ class AdminOrderService:
         Завершение заявки после ввода хеша транзакции (ручной режим).
         Сохраняет хеш, меняет статус на 'completed' и записывает комиссию.
         """
+        logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
         order = await self.db.get_order(order_id)
         if not order:
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
             return False
 
         async with self.db.uow() as uow:
@@ -165,10 +171,12 @@ class AdminOrderService:
                 created_by=admin_id
             )
             await uow.commit()
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена")
         return True
 
     async def reject_order(self, order_id: int, admin_id: int) -> bool:
         """Отклонение заявки (статус 'cancelled')."""
+        logger.info(f"[ADMIN {admin_id}] Отклонение заявки #{order_id}")
         async with self.db.uow() as uow:
             await uow.orders.update_order_status(
                 order_id,
@@ -177,6 +185,7 @@ class AdminOrderService:
                 admin_id
             )
             await uow.commit()
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} отклонена")
         return True
 
     async def request_receipt(self, order_id: int, user_id: int) -> bool:
@@ -184,6 +193,7 @@ class AdminOrderService:
         Запросить чек у пользователя (отправить напоминание).
         Возвращает True, если заявка существует (фактическая отправка происходит в хендлере).
         """
+        logger.debug(f"Запрос чека для заявки #{order_id}")
         order = await self.db.get_order(order_id)
         if not order:
             return False
@@ -199,5 +209,6 @@ class AdminOrderService:
         Сохраняет введённые админом платёжные реквизиты для ручного режима.
         Сама отправка сообщения пользователю происходит в payment_service.
         """
+        logger.info(f"Сохранение платёжных реквизитов для заявки #{order_id}")
         await self.db.set_order_manual_payment_details(order_id, details)
         return True
