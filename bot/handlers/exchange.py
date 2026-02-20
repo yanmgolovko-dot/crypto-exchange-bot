@@ -157,6 +157,15 @@ async def buy_crypto(message: Message, state: FSMContext, **services):
 async def handle_order_message(message: Message, **services):
     user_id = message.from_user.id
     logger.info(f"[{user_id}] Получено сообщение в процессе создания заявки: {message.text}")
+
+    # FIX: добавлена проверка кнопок главного меню
+    if message.text in ["💰 Купить криптовалюту", "📋 Мои заявки", "👤 Личный кабинет", "❓ Помощь", "💬 Поддержка"]:
+        await message.answer(
+            "❌ Вы уже находитесь в процессе создания заявки.\n"
+            "Чтобы перейти в другой раздел, сначала отмените текущую заявку с помощью /cancel или кнопки «❌ Отменить»."
+        )
+        return
+
     manager = user_managers[user_id]
     try:
         completed = await manager.handle_message(message, services)
@@ -183,18 +192,6 @@ async def handle_order_callback(callback: CallbackQuery, **services):
         logger.error(f"[{user_id}] Ошибка в процессе создания заявки: {e}", exc_info=True)
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
         del user_managers[user_id]
-
-
-# ---------- ОБРАБОТЧИКИ ДЛЯ ВОЗВРАТА В ГЛАВНОЕ МЕНЮ (ТОЛЬКО ДЛЯ АКТИВНОГО МЕНЕДЖЕРА) ----------
-@router.callback_query(HasActiveManagerCallbackFilter(), F.data == "back_to_main")
-async def back_to_main_in_process(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Возврат в главное меню во время создания заявки")
-    if user_id in user_managers:
-        del user_managers[user_id]
-    await state.clear()
-    await callback.message.edit_text("Главное меню:", reply_markup=main_menu_keyboard())
-    await callback.answer()
 
 
 # ---------- ОБРАБОТЧИКИ ДЛЯ ЗАГРУЗКИ ЧЕКА ----------
@@ -347,11 +344,6 @@ async def process_crypto_selection(callback: CallbackQuery, state: FSMContext):
 # ---------- ВЫБОР ВАЛЮТЫ ВВОДА ----------
 @router.callback_query(F.data.startswith("currency_rub_"))
 async def process_currency_rub(callback: CallbackQuery, state: FSMContext, crypto_api: CryptoAPI, db: Database):
-    """
-    Пользователь выбрал ввод суммы в рублях.
-    Показывает текущий курс и динамический список предустановленных сумм,
-    отфильтрованных по минимальному и максимальному лимитам.
-    """
     crypto_type = callback.data.split("_")[2]
     await state.update_data(crypto_type=crypto_type, input_type='rub')
     await state.set_state(ExchangeStates.selecting_amount)
@@ -359,15 +351,11 @@ async def process_currency_rub(callback: CallbackQuery, state: FSMContext, crypt
     rate = await crypto_api.get_btc_price_rub() if crypto_type == "BTC" else await crypto_api.get_ltc_price_rub()
     await state.update_data(rate=rate)
 
-    # Получаем лимиты из настроек
     min_net = float(await db.get_setting('min_amount', str(config.MIN_AMOUNT)))
     max_net = float(await db.get_setting('max_amount', str(config.MAX_AMOUNT)))
 
-    # Формируем список предустановленных сумм (стандартные значения, но только те, что попадают в лимиты)
     standard_amounts = [1000, 3000, 5000, 10000, 20000, 50000, 100000, 200000, 500000]
     amounts = [a for a in standard_amounts if min_net <= a <= max_net]
-
-    # Если ни одна стандартная сумма не подходит, добавляем min и max
     if not amounts:
         amounts = [int(min_net), int(max_net)]
         amounts = sorted(set(amounts))
@@ -377,12 +365,10 @@ async def process_currency_rub(callback: CallbackQuery, state: FSMContext, crypt
         f"Текущий курс: {rate:,.0f} ₽\n\n"
         f"Выберите сумму, которую хотите получить (в рублях):"
     )
-
     try:
         await callback.message.edit_text(text, reply_markup=amount_select_keyboard(crypto_type, amounts))
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
-            # Игнорируем, сообщение не изменилось
             pass
         else:
             raise e
