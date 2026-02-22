@@ -1,8 +1,27 @@
-﻿__pycache__/
-*.py[cod]
-.env
-*.db
-data/receipts/
-data/backups/
+﻿# Виртуальное окружение
 venv/
-bot.log/
+.venv/
+
+# База данных и пользовательские данные
+data/
+*.db
+*.sqlite3
+
+# Логи
+*.log
+bot.log
+
+# Конфигурация с секретами
+.env
+
+# Кэш Python
+__pycache__/
+*.pyc
+
+# Файлы IDE
+.vscode/
+.idea/
+
+# Резервные копии (если есть)
+*.backup
+*.bak
