@@ -16,6 +16,7 @@ from bot.services.crypto_wallets import wallet_manager, CryptoWalletManager
 from bot.services.payment_service import PaymentService
 from bot.services.order_service import OrderService
 from bot.services.admin_order_service import AdminOrderService
+from bot.services.coupon_service import coupon_service
 from bot.keyboards import admin_order_keyboard, manual_pending_keyboard, auto_pending_keyboard, receipt_received_keyboard
 from bot.admin.main import is_admin, notify_admins, send_receipt
 from bot.admin.states import AdminStates
@@ -550,7 +551,7 @@ async def admin_approve_order(
     payment_mode = await db.get_payment_mode()
 
     if payment_mode == 'auto':
-        result = await admin_order_service.approve_order_auto(order_id, admin_id)
+        result = await admin_order_service.approve_order_auto(order_id, admin_id, bot)
         if not result['success']:
             logger.warning(f"[ADMIN {admin_id}] Ошибка подтверждения заявки #{order_id}: {result['error']}")
             await callback.answer(f"❌ {result['error']}", show_alert=True)
@@ -559,6 +560,9 @@ async def admin_approve_order(
         order = result['order']
         tx_hash = result['tx_hash']
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} подтверждена, tx_hash: {tx_hash}")
+
+        # Выдаём купоны за активность
+        await coupon_service.check_and_give_activity_coupons(order.user_id)
 
         explorer_url = None
         if order.crypto_type == 'LTC':
@@ -680,7 +684,7 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
         await state.clear()
         return
 
-    success = await admin_order_service.complete_order_with_tx_hash(order_id, tx_hash, admin_id)
+    success = await admin_order_service.complete_order_with_tx_hash(order_id, tx_hash, admin_id, bot)
     if not success:
         logger.error(f"[ADMIN {admin_id}] Не удалось завершить заявку #{order_id} с хешем {tx_hash}")
         await message.answer("❌ Не удалось завершить заявку.")
@@ -743,6 +747,9 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
             created_by=admin_id
         )
         await uow.commit()
+
+    # Выдаём купоны за активность
+    await coupon_service.check_and_give_activity_coupons(order.user_id)
 
     user_text = (
         f"✅ <b>Заявка #{order_id} выполнена!</b>\n\n"

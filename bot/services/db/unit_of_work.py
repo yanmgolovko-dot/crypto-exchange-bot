@@ -12,6 +12,10 @@ from bot.services.db.bank_repository import BankRepository
 from bot.services.db.promo_repository import PromoRepository
 from bot.services.db.finance_repository import FinanceRepository
 from bot.services.db.settings_repository import SettingsRepository
+from bot.services.db.coupon_repository import CouponRepository
+from bot.services.db.activity_award_repository import ActivityAwardRepository
+from bot.services.db.ticket_repository import TicketRepository
+from bot.services.db.review_repository import ReviewRepository
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,11 @@ class UnitOfWork:
         self.promo = PromoRepository(connection)
         self.finance = FinanceRepository(connection)
         self.settings = SettingsRepository(connection)
+        self.coupons = CouponRepository(connection)
+        # НОВЫЕ РЕПОЗИТОРИИ
+        self.activity_awards = ActivityAwardRepository(connection)
+        self.tickets = TicketRepository(connection)
+        self.reviews = ReviewRepository(connection)
         logger.debug("UnitOfWork инициализирован")
 
     async def __aenter__(self):

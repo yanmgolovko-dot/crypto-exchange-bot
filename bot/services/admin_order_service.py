@@ -5,9 +5,13 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
 
+from aiogram import Bot
+
 from bot.services.db import Database
 from bot.services.crypto_wallets import CryptoWalletManager
+from bot.services.coupon_service import coupon_service
 from bot.config.settings import config
+from bot.services.review_notifier import ask_for_review
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +26,12 @@ class AdminOrderService:
     async def approve_order_auto(
         self,
         order_id: int,
-        admin_id: int
+        admin_id: int,
+        bot: Bot
     ) -> Dict[str, Any]:
         """
         Подтверждение заявки в автоматическом режиме.
         Выбирает активный кошелёк с достаточным балансом и отправляет криптовалюту.
-        **Добавлена атомарная блокировка заявки через статус 'processing' для предотвращения двойной отправки.**
         """
         logger.info(f"[ADMIN {admin_id}] Автоматическое подтверждение заявки #{order_id}")
 
@@ -120,6 +124,12 @@ class AdminOrderService:
             await uow.commit()
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, комиссия записана")
 
+        # Выдаём купоны за активность пользователю
+        await coupon_service.check_and_give_activity_coupons(order.user_id)
+
+        # Отправляем предложение оставить отзыв
+        await ask_for_review(bot, order.user_id, order_id)
+
         return {
             'success': True,
             'tx_hash': tx_hash,
@@ -129,7 +139,6 @@ class AdminOrderService:
     async def approve_order_manual(self, order_id: int, admin_id: int) -> bool:
         """
         Подготовка к ручному подтверждению (после получения оплаты).
-        Просто проверяет, что заявка существует и имеет статус 'paid'.
         """
         logger.info(f"[ADMIN {admin_id}] Ручное подтверждение заявки #{order_id}")
         order = await self.db.get_order(order_id)
@@ -142,11 +151,11 @@ class AdminOrderService:
         self,
         order_id: int,
         tx_hash: str,
-        admin_id: int
+        admin_id: int,
+        bot: Bot
     ) -> bool:
         """
         Завершение заявки после ввода хеша транзакции (ручной режим).
-        Сохраняет хеш, меняет статус на 'completed' и записывает комиссию.
         """
         logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
         order = await self.db.get_order(order_id)
@@ -172,6 +181,12 @@ class AdminOrderService:
             )
             await uow.commit()
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена")
+
+        # Выдаём купоны за активность пользователю
+        await coupon_service.check_and_give_activity_coupons(order.user_id)
+
+        # Отправляем предложение оставить отзыв
+        await ask_for_review(bot, order.user_id, order_id)
         return True
 
     async def reject_order(self, order_id: int, admin_id: int) -> bool:
@@ -189,10 +204,7 @@ class AdminOrderService:
         return True
 
     async def request_receipt(self, order_id: int, user_id: int) -> bool:
-        """
-        Запросить чек у пользователя (отправить напоминание).
-        Возвращает True, если заявка существует (фактическая отправка происходит в хендлере).
-        """
+        """Запросить чек у пользователя (отправить напоминание)."""
         logger.debug(f"Запрос чека для заявки #{order_id}")
         order = await self.db.get_order(order_id)
         if not order:
@@ -205,10 +217,7 @@ class AdminOrderService:
         details: str,
         user_id: int
     ) -> bool:
-        """
-        Сохраняет введённые админом платёжные реквизиты для ручного режима.
-        Сама отправка сообщения пользователю происходит в payment_service.
-        """
+        """Сохраняет введённые админом платёжные реквизиты."""
         logger.info(f"Сохранение платёжных реквизитов для заявки #{order_id}")
         await self.db.set_order_manual_payment_details(order_id, details)
         return True

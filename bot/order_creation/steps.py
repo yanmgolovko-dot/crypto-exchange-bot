@@ -95,15 +95,9 @@ class SelectCryptoStep(OrderCreationStep):
             return True
         elif callback.data == "back_to_main":
             logger.info(f"[{self.data.user_id}] Возврат в главное меню")
-            # Удаляем текущее сообщение с инлайн-клавиатурой
             await callback.message.delete()
-            # Отправляем новое сообщение с главным меню (reply-клавиатура)
-            await callback.message.answer(
-                "Главное меню:",
-                reply_markup=main_menu_keyboard()
-            )
+            await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
             await callback.answer()
-            # Завершаем процесс, следующий шаг не нужен
             return True
         return False
 
@@ -364,7 +358,68 @@ class PromoCodeStep(OrderCreationStep):
                 return EnterAmountRubStep(self.data, self.state)
             else:
                 return EnterAmountCryptoStep(self.data, self.state)
-        # После промокода всегда переходим к вводу адреса
+        # После промокода идём к купону
+        return CouponStep(self.data, self.state)
+
+
+class CouponStep(OrderCreationStep):
+    """Шаг 4.5: ввод купона (опционально)."""
+
+    async def display(self, message: Message, services: Dict[str, Any]):
+        logger.info(f"[{self.data.user_id}] Отображение шага CouponStep")
+        text = (
+            f"🎫 <b>Купон</b>\n\n"
+            f"У вас есть купон?\n"
+            f"Введите код купона для получения скидки или нажмите «Пропустить»:"
+        )
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="⏩ Пропустить", callback_data="skip_coupon")
+        keyboard.button(text="🔙 Назад", callback_data="back_to_promo")
+        keyboard.adjust(1)
+        await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+    async def process_message(self, message: Message, services: Dict[str, Any]) -> bool:
+        code = message.text.strip()
+        logger.info(f"[{self.data.user_id}] Ввод купона: {code}")
+        if not code:
+            await message.answer("❌ Введите код купона или нажмите «Пропустить».")
+            return False
+
+        order_amount = self.data.net_amount or 0
+        db = services['db']
+        is_valid, msg, coupon = await db.coupons.validate_coupon(code, self.data.user_id, order_amount)
+        if is_valid and coupon:
+            self.data.coupon_id = coupon.id
+            self.data.coupon_code = coupon.code
+            self.data.coupon_discount_type = coupon.discount_type
+            self.data.coupon_discount_value = coupon.discount_value
+            self.data.coupon_discount_on = coupon.discount_on
+            await message.answer(
+                f"✅ {msg}\n"
+                f"Скидка: {coupon.discount_value}{'%' if coupon.discount_type == 'percent' else '₽'} "
+                f"на {'всю сумму' if coupon.discount_on == 'order' else 'комиссию'}"
+            )
+        else:
+            await message.answer(f"❌ {msg}")
+        return True
+
+    async def process_callback(self, callback: CallbackQuery, services: Dict[str, Any]) -> bool:
+        logger.info(f"[{self.data.user_id}] Обработка callback {callback.data} на шаге CouponStep")
+        if callback.data == "skip_coupon":
+            logger.info(f"[{self.data.user_id}] Пропуск купона")
+            await callback.answer()
+            return True
+        elif callback.data == "back_to_promo":
+            logger.info(f"[{self.data.user_id}] Возврат к промокоду")
+            self.data.back_to_promo = True
+            await callback.answer()
+            return True
+        return False
+
+    async def get_next_step(self) -> Optional[OrderCreationStep]:
+        if self.data.back_to_promo:
+            self.data.back_to_promo = False
+            return PromoCodeStep(self.data, self.state)
         return EnterWalletStep(self.data, self.state)
 
 
@@ -423,7 +478,12 @@ class ConfirmationStep(OrderCreationStep):
             input_type=self.data.input_type,
             amount=self.data.amount,
             discount_percent=self.data.discount_percent,
-            rate=self.data.rate
+            rate=self.data.rate,
+            coupon_data={
+                'discount_type': self.data.coupon_discount_type,
+                'discount_value': self.data.coupon_discount_value,
+                'discount_on': self.data.coupon_discount_on
+            } if self.data.coupon_id else None
         )
         if not calc_result:
             logger.error(f"[{self.data.user_id}] Не удалось рассчитать заявку")
@@ -445,6 +505,8 @@ class ConfirmationStep(OrderCreationStep):
         )
         if self.data.discount_percent:
             text += f"🎁 Скидка по промокоду: {self.data.discount_percent}%\n\n"
+        if self.data.coupon_code:
+            text += f"🎫 Купон {self.data.coupon_code} применён\n\n"
         text += "Подтвердите создание заявки:"
 
         await message.answer(text, reply_markup=confirm_order_keyboard(0))
@@ -463,10 +525,14 @@ class ConfirmationStep(OrderCreationStep):
                 fee_percent=self.data.fee_percent,
                 crypto_address=self.data.wallet_address,
                 promo_code=self.data.promo_code,
-                discount_percent=self.data.discount_percent
+                discount_percent=self.data.discount_percent,
+                coupon_id=self.data.coupon_id
             )
             self.data.order_id = order_id
             logger.info(f"[{self.data.user_id}] Заявка #{order_id} создана")
+            if self.data.coupon_id:
+                db = services['db']
+                await db.coupons.use_coupon(self.data.coupon_id, self.data.user_id, order_id)
             await self._send_payment_info(callback, services)
             await callback.answer()
             return True

@@ -104,7 +104,6 @@ class SettingsRepository(BaseRepository):
             return False
         return await self.set_setting('manual_payment_source', source, updated_by)
 
-    # ========== НОВЫЕ МЕТОДЫ ДЛЯ УРОВНЯ ЛОГИРОВАНИЯ ==========
     @db_retry()
     async def get_log_level(self) -> str:
         """
@@ -128,3 +127,39 @@ class SettingsRepository(BaseRepository):
             return False
         logger.info(f"Изменение уровня логирования на {level_upper} (админ {updated_by})")
         return await self.set_setting('log_level', level_upper, updated_by)
+
+    # ===== РАБОТА С JSON-НАСТРОЙКАМИ =====
+    @db_retry()
+    async def get_json_setting(self, key: str, default: dict = None) -> dict:
+        """
+        Получить настройку, которая хранится в виде JSON-строки.
+        :param key: ключ настройки
+        :param default: словарь по умолчанию, если настройка отсутствует или невалидна
+        :return: словарь
+        """
+        value = await self.get_setting(key, None)
+        if value is None:
+            return default or {}
+        try:
+            import json
+            return json.loads(value)
+        except Exception as e:
+            logger.error(f"Ошибка парсинга JSON для ключа {key}: {e}")
+            return default or {}
+
+    @db_retry()
+    async def set_json_setting(self, key: str, value: dict, updated_by: int = None) -> bool:
+        """
+        Сохранить настройку в виде JSON-строки.
+        :param key: ключ настройки
+        :param value: словарь для сохранения
+        :param updated_by: ID администратора
+        :return: True в случае успеха
+        """
+        import json
+        try:
+            json_str = json.dumps(value, ensure_ascii=False, indent=2)
+            return await self.set_setting(key, json_str, updated_by)
+        except Exception as e:
+            logger.error(f"Ошибка сериализации JSON для ключа {key}: {e}")
+            return False

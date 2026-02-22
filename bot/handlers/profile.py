@@ -14,21 +14,21 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.services.db import db
 from bot.services.crypto_api import crypto_api
+from bot.services.coupon_service import coupon_service
+from bot.services.review_service import review_service
 from bot.keyboards import main_menu_keyboard
 
-# Настройка логгера для текущего модуля
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 def user_profile_keyboard():
-    """
-    Создаёт инлайн-клавиатуру для разделов личного кабинета.
-    """
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📊 Моя статистика", callback_data="user_stats")
     keyboard.button(text="💰 Бонусный баланс", callback_data="user_bonus")
     keyboard.button(text="🎁 Мои промокоды", callback_data="user_promos")
+    keyboard.button(text="🎫 Мои купоны", callback_data="user_my_coupons")
+    keyboard.button(text="📝 Мои отзывы", callback_data="user_my_reviews")
     keyboard.button(text="🔗 Реферальная программа", callback_data="user_referral")
     keyboard.button(text="⚙️ Настройки", callback_data="user_settings")
     keyboard.button(text="🔙 Главное меню", callback_data="user_back_main")
@@ -39,14 +39,9 @@ def user_profile_keyboard():
 @router.message(Command("profile"))
 @router.message(F.text == "👤 Личный кабинет")
 async def cmd_profile(message: Message):
-    """
-    Обработчик команды /profile или нажатия кнопки «👤 Личный кабинет».
-    Отображает основную информацию о пользователе и статистику.
-    """
     user_id = message.from_user.id
     logger.info(f"[{user_id}] Открыт личный кабинет")
 
-    # Получаем пользователя из БД (если не существует, создаём)
     user = await db.get_user(user_id)
     if not user:
         logger.info(f"[{user_id}] Пользователь не найден в БД, создаём запись")
@@ -59,7 +54,6 @@ async def cmd_profile(message: Message):
         user = await db.get_user(user_id)
         logger.info(f"[{user_id}] Запись пользователя создана")
 
-    # Проверяем, не забанен ли пользователь
     is_banned, ban_reason = await db.is_user_banned(user_id)
     if is_banned:
         logger.warning(f"[{user_id}] Попытка доступа забаненным пользователем")
@@ -71,7 +65,6 @@ async def cmd_profile(message: Message):
         )
         return
 
-    # Получаем статистику пользователя
     stats = await db.get_user_stats(user_id)
     prices = await crypto_api.get_all_prices()
 
@@ -100,9 +93,6 @@ async def cmd_profile(message: Message):
 
 @router.callback_query(F.data == "user_stats")
 async def user_stats(callback: CallbackQuery):
-    """
-    Показывает подробную статистику пользователя и последние заявки.
-    """
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Запрошена статистика")
 
@@ -126,14 +116,12 @@ async def user_stats(callback: CallbackQuery):
                 "completed": "✅",
                 "cancelled": "❌"
             }.get(order.status, "❓")
-
             status_text = {
                 "pending": "Ожидает оплаты",
                 "paid": "На проверке",
                 "completed": "Выполнена",
                 "cancelled": "Отменена"
             }.get(order.status, "Неизвестно")
-
             text += (
                 f"{status_emoji} <b>#{order.id}</b> | {order.crypto_type}\n"
                 f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f}\n"
@@ -143,23 +131,17 @@ async def user_stats(callback: CallbackQuery):
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    logger.debug(f"[{user_id}] Статистика отправлена")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_bonus")
 async def user_bonus(callback: CallbackQuery):
-    """
-    Показывает бонусный баланс и информацию о том, как его заработать.
-    """
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Запрошен бонусный баланс")
 
     user = await db.get_user(user_id)
     if not user:
-        logger.error(f"[{user_id}] Пользователь не найден в БД при запросе бонусов")
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
 
@@ -178,17 +160,12 @@ async def user_bonus(callback: CallbackQuery):
     keyboard.button(text="🔗 Реферальная программа", callback_data="user_referral")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
-
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    logger.debug(f"[{user_id}] Информация о бонусах отправлена")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_promos")
 async def user_promos(callback: CallbackQuery):
-    """
-    Показывает список доступных и использованных промокодов.
-    """
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Запрошен список промокодов")
 
@@ -196,7 +173,6 @@ async def user_promos(callback: CallbackQuery):
         all_promos = await db.get_all_promo_codes()
         used_promo_ids = await db.get_user_used_promo_ids(user_id)
         used_promo_ids = set(used_promo_ids)
-
         now = datetime.now().isoformat()
         available = []
         used = []
@@ -206,14 +182,12 @@ async def user_promos(callback: CallbackQuery):
                 continue
             if promo.valid_to and promo.valid_to < now:
                 continue
-
             if promo.id in used_promo_ids:
                 used.append(promo)
             else:
                 available.append(promo)
 
         text = "🎁 <b>Мои промокоды</b>\n\n"
-
         if available:
             text += "<b>Доступные для использования:</b>\n"
             for promo in available:
@@ -228,30 +202,82 @@ async def user_promos(callback: CallbackQuery):
 
         if not available and not used:
             text = "🎁 <b>Мои промокоды</b>\n\nУ вас пока нет промокодов. Следите за акциями!"
-
     except Exception as e:
         logger.error(f"[{user_id}] Ошибка при получении промокодов: {e}", exc_info=True)
         text = "❌ Произошла ошибка при загрузке промокодов."
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    logger.debug(f"[{user_id}] Список промокодов отправлен")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "user_my_coupons")
+async def user_my_coupons(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошен список купонов")
+
+    coupons = await coupon_service.get_user_coupons(user_id)
+
+    if not coupons:
+        text = "🎫 <b>Мои купоны</b>\n\nУ вас пока нет доступных купонов."
+    else:
+        text = "🎫 <b>Мои купоны</b>\n\n"
+        for coup in coupons:
+            if coup.discount_type == 'percent':
+                discount_str = f"{coup.discount_value}%"
+            else:
+                discount_str = f"{coup.discount_value:,.0f} ₽"
+            on_str = "на всю сумму" if coup.discount_on == 'order' else "на комиссию"
+            valid_str = "бессрочно"
+            if coup.valid_to:
+                valid_date = coup.valid_to[:10]
+                valid_str = f"до {valid_date}"
+            text += (
+                f"• <b>{coup.code}</b>\n"
+                f"  Скидка: {discount_str} {on_str}\n"
+                f"  {coup.description or '—'}\n"
+                f"  Действует: {valid_str}\n\n"
+            )
+
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
+    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "user_my_reviews")
+async def user_my_reviews(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Запрошены свои отзывы")
+
+    reviews = await review_service.get_user_reviews(user_id)
+    if not reviews:
+        text = "📝 У вас пока нет отзывов."
+    else:
+        text = "📝 <b>Мои отзывы</b>\n\n"
+        for rev in reviews:
+            status = "✅ Опубликован" if rev.is_approved else "⏳ На модерации"
+            rating_stars = "⭐" * rev.rating + "☆" * (5 - rev.rating)
+            text += f"Заявка #{rev.order_id} {rating_stars} ({status})\n"
+            text += f"Комментарий: {rev.comment or '—'}\n"
+            if rev.admin_reply:
+                text += f"<i>Ответ: {rev.admin_reply}</i>\n"
+            text += f"—— {rev.created_at[:10]}\n\n"
+
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
+    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_referral")
 async def user_referral(callback: CallbackQuery):
-    """
-    Показывает реферальную ссылку и код пользователя.
-    """
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Запрошена реферальная программа")
 
     user = await db.get_user(user_id)
     if not user:
-        logger.error(f"[{user_id}] Пользователь не найден в БД при запросе рефералов")
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
 
@@ -271,23 +297,17 @@ async def user_referral(callback: CallbackQuery):
     keyboard.button(text="📤 Поделиться", url=f"https://t.me/share/url?url={referral_link}&text=Крипто-обменник с лучшими курсами!")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
-
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    logger.debug(f"[{user_id}] Реферальная информация отправлена")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_settings")
 async def user_settings(callback: CallbackQuery):
-    """
-    Отображает настройки пользователя (уведомления, язык).
-    """
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Запрошены настройки")
 
     user = await db.get_user(user_id)
     if not user:
-        logger.error(f"[{user_id}] Пользователь не найден в БД при запросе настроек")
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
 
@@ -302,23 +322,17 @@ async def user_settings(callback: CallbackQuery):
     keyboard.button(text="🔔 Уведомления", callback_data="user_toggle_notifications")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
-
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    logger.debug(f"[{user_id}] Настройки отправлены")
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_toggle_notifications")
 async def user_toggle_notifications(callback: CallbackQuery):
-    """
-    Переключает состояние уведомлений для пользователя.
-    """
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Переключение уведомлений")
 
     user = await db.get_user(user_id)
     if not user:
-        logger.error(f"[{user_id}] Пользователь не найден в БД при переключении уведомлений")
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
 
@@ -326,41 +340,18 @@ async def user_toggle_notifications(callback: CallbackQuery):
     await db.set_user_notifications(user_id, new_value)
 
     status = "включены" if new_value else "отключены"
-    logger.info(f"[{user_id}] Уведомления теперь {status}")
     await callback.answer(f"Уведомления {status}", show_alert=True)
-
-    # Возвращаемся в меню настроек
     await user_settings(callback)
 
 
 @router.callback_query(F.data == "user_back_profile")
 async def user_back_profile(callback: CallbackQuery):
-    """
-    Возвращает пользователя в главное меню личного кабинета.
-    """
-    user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Возврат в главное меню профиля")
-
-    # Просто вызываем cmd_profile, передавая callback.message как message
     await cmd_profile(callback.message)
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_back_main")
 async def user_back_main(callback: CallbackQuery):
-    """
-    Возвращает пользователя в главное меню бота.
-    """
-    user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Возврат в главное меню")
-
-    await callback.message.edit_text(
-        "Главное меню:",
-        reply_markup=None
-    )
-    await callback.message.answer(
-        "Вы вернулись в главное меню.",
-        reply_markup=main_menu_keyboard()
-    )
+    await callback.message.edit_text("Главное меню:", reply_markup=None)
+    await callback.message.answer("Вы вернулись в главное меню.", reply_markup=main_menu_keyboard())
     await callback.answer()
-    logger.debug(f"[{user_id}] Главное меню отображено")

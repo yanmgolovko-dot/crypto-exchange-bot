@@ -12,6 +12,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 
 from bot.services.user_service import UserService
+from bot.services.coupon_service import coupon_service
 from bot.keyboards import main_menu_keyboard
 
 # Настройка логгера для текущего модуля
@@ -60,6 +61,8 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
             referred_by=referred_by
         )
         logger.info(f"[{user_id}] Пользователь успешно зарегистрирован/обновлён")
+        # После регистрации выдаём приветственный купон
+        await coupon_service.give_welcome_coupon(user_id)
     except Exception as e:
         logger.error(f"[{user_id}] Ошибка при регистрации пользователя: {e}", exc_info=True)
         # В случае ошибки всё равно покажем меню, но запишем в лог

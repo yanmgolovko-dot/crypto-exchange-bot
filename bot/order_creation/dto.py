@@ -35,3 +35,10 @@ class OrderCreationData:
     back_to_main: bool = False          # вернуться в главное меню (обрабатывается отдельно)
     back_to_amount: bool = False        # вернуться к выбору суммы
     back_to_promo: bool = False         # вернуться к вводу промокода
+
+    # Купон
+    coupon_id: Optional[int] = None          # ID применённого купона
+    coupon_code: Optional[str] = None        # код купона (для отображения)
+    coupon_discount_type: Optional[str] = None  # 'percent' или 'fixed'
+    coupon_discount_value: Optional[float] = None
+    coupon_discount_on: Optional[str] = None    # 'order' или 'commission'

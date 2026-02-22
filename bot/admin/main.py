@@ -67,15 +67,20 @@ def admin_main_keyboard():
     """Главная клавиатура админ-панели."""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📋 Заявки", callback_data="admin_orders_menu")
+    keyboard.button(text="📝 Отзывы", callback_data="admin_reviews_menu")
+    keyboard.button(text="📢 Рассылка", callback_data="admin_broadcast")
     keyboard.button(text="💰 Финансы", callback_data="admin_finance_menu")
     keyboard.button(text="⚙️ Настройки", callback_data="admin_settings_menu")
     keyboard.button(text="👥 Пользователи", callback_data="admin_users_menu")
     keyboard.button(text="🎁 Акции", callback_data="admin_promo_menu")
+    keyboard.button(text="🎫 Купоны", callback_data="admin_coupons_menu")   # НОВАЯ КНОПКА
     keyboard.button(text="💳 Реквизиты", callback_data="admin_bank_menu")
     keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
+    keyboard.button(text="📋 Тикеты", callback_data="admin_tickets_menu")
     keyboard.button(text="💎 Кошельки", callback_data="admin_wallets_menu")
     keyboard.button(text="🔍 Диагностика", callback_data="admin_diagnostic")
-    keyboard.adjust(3, 3, 3)
+    # Настройте количество кнопок в ряду под ваше меню (например, 3,3,3,1)
+    keyboard.adjust(3, 3, 3, 1)
     return keyboard.as_markup()
 
 

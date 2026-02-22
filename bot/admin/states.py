@@ -45,8 +45,32 @@ class AdminStates(StatesGroup):
     # Ручной режим (ввод реквизитов)
     entering_manual_payment_details = State()
 
-    # Ввод хеша транзакции (добавлено)
+    # Ввод хеша транзакции
     waiting_tx_hash = State()
 
     # Поиск заявки
     searching_order = State()
+
+    # Купоны
+    creating_coupon_code = State()
+    creating_coupon_discount_type = State()
+    creating_coupon_discount_value = State()
+    creating_coupon_discount_on = State()
+    creating_coupon_limits = State()
+    creating_coupon_valid_days = State()
+    creating_coupon_description = State()
+
+    # Настройка приветственных купонов
+    editing_welcome_discount_type = State()
+    editing_welcome_value = State()
+    editing_welcome_discount_on = State()
+    editing_welcome_valid_days = State()
+    editing_welcome_description = State()
+
+    # Настройка купонов за активность
+    adding_activity_threshold_orders = State()
+    adding_activity_threshold_discount_type = State()
+    adding_activity_threshold_value = State()
+    adding_activity_threshold_discount_on = State()
+    adding_activity_threshold_valid_days = State()
+    editing_activity_threshold_index = State()

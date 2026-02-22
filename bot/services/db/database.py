@@ -9,6 +9,10 @@ from .bank_repository import BankRepository
 from .promo_repository import PromoRepository
 from .finance_repository import FinanceRepository
 from .settings_repository import SettingsRepository
+from .coupon_repository import CouponRepository
+from .activity_award_repository import ActivityAwardRepository
+from .ticket_repository import TicketRepository
+from .review_repository import ReviewRepository
 from .unit_of_work import UnitOfWork
 from .base import db_retry
 
@@ -31,6 +35,11 @@ class Database:
         self.promo = PromoRepository(self._connection)
         self.finance = FinanceRepository(self._connection)
         self.settings = SettingsRepository(self._connection)
+        self.coupons = CouponRepository(self._connection)
+        # НОВЫЕ РЕПОЗИТОРИИ
+        self.activity_awards = ActivityAwardRepository(self._connection)
+        self.tickets = TicketRepository(self._connection)
+        self.reviews = ReviewRepository(self._connection)
 
         # Прокси-методы для обратной совместимости
         # Пользователи
@@ -110,9 +119,16 @@ class Database:
         self.increment_bot_version = self.settings.increment_bot_version
         self.get_manual_payment_source = self.settings.get_manual_payment_source
         self.set_manual_payment_source = self.settings.set_manual_payment_source
-        # НОВЫЙ МЕТОД
         self.get_log_level = self.settings.get_log_level
         self.set_log_level = self.settings.set_log_level
+
+        # Купоны
+        self.create_coupon = self.coupons.create_coupon
+        self.get_coupon = self.coupons.get_coupon
+        self.validate_coupon = self.coupons.validate_coupon
+        self.use_coupon = self.coupons.use_coupon
+        self.get_all_coupons = self.coupons.get_all_coupons
+        self.toggle_coupon = self.coupons.toggle_coupon
 
         # Дополнительные методы
         self._backup_db = self._backup_db

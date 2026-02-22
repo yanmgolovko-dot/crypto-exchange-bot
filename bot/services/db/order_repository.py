@@ -36,6 +36,7 @@ class Order:
     tx_hash: Optional[str] = None
     reminder_count: int = 0
     last_reminder_at: Optional[str] = None
+    coupon_id: Optional[int] = None   # новое поле
 
 
 class OrderRepository(BaseRepository):
@@ -49,7 +50,8 @@ class OrderRepository(BaseRepository):
     async def create_order(self, user_id: int, username: str, crypto_type: str,
                            amount_rub: float, amount_crypto: float, rate: float,
                            fee_percent: float, crypto_address: str,
-                           promo_code: str = None, discount_percent: float = 0) -> int:
+                           promo_code: str = None, discount_percent: float = 0,
+                           coupon_id: Optional[int] = None) -> int:
         """
         Создаёт новую заявку со статусом 'pending'.
         :return: ID созданной заявки
@@ -59,10 +61,11 @@ class OrderRepository(BaseRepository):
             cursor = await self.conn.execute("""
                 INSERT INTO exchange_orders 
                 (user_id, username, crypto_type, amount_rub, amount_crypto, rate, 
-                 fee_percent, crypto_address, status, promo_code, discount_percent, reminder_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0)
+                 fee_percent, crypto_address, status, promo_code, discount_percent, 
+                 reminder_count, coupon_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?)
             """, (user_id, username, crypto_type, amount_rub, amount_crypto, 
-                  rate, fee_percent, crypto_address, promo_code, discount_percent))
+                  rate, fee_percent, crypto_address, promo_code, discount_percent, coupon_id))
             await self.conn.commit()
             order_id = cursor.lastrowid
             logger.info(f"Заявка #{order_id} создана в БД")

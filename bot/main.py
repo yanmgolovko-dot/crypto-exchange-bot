@@ -10,12 +10,26 @@ from datetime import datetime
 import traceback
 from logging.handlers import RotatingFileHandler
 
+# ========== НАСТРОЙКА ЛОГГЕРА СРАЗУ ПОСЛЕ ИМПОРТА СТАНДАРТНЫХ БИБЛИОТЕК ==========
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+logging.basicConfig(
+    level=logging.DEBUG,
+    format=LOG_FORMAT,
+    handlers=[
+        logging.StreamHandler(sys.stderr),
+        logging.FileHandler('bot.log', encoding='utf-8')
+    ]
+)
+logging.getLogger().debug("🔧 Базовая настройка логгера выполнена")
+
+# Импорты aiogram
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, Update
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 
+# Импорты модулей проекта
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config.settings import config
@@ -37,21 +51,24 @@ from bot.admin import router as admin_router
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(line_buffering=True)
 
-# ==================== НАСТРОЙКА ЛОГИРОВАНИЯ (временная, потом будет заменена из БД) ====================
-# Сначала настраиваем базовое логирование, чтобы видеть процесс загрузки
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
 logger = logging.getLogger(__name__)
 
-# Создаём сессию с увеличенным таймаутом
+print("🔧 Создание сессии бота...")
 session = AiohttpSession(timeout=300)
 bot = Bot(token=config.BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-# ==================== ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ ====================
+# ==================== ОТЛАДОЧНАЯ МИДЛВАРЬ ДЛЯ ЛОГГИРОВАНИЯ АПДЕЙТОВ ====================
+@dp.update.outer_middleware()
+async def log_updates(handler, event: Update, data):
+    logger.info(f"📩 Получен апдейт ID: {event.update_id}")
+    if event.message:
+        logger.info(f"   Сообщение от {event.message.from_user.id}: {event.message.text}")
+    elif event.callback_query:
+        logger.info(f"   Callback от {event.callback_query.from_user.id}: {event.callback_query.data}")
+    return await handler(event, data)
+
+print("🔧 Инициализация сервисов...")
 order_service = OrderService(db, crypto_api)
 payment_service = PaymentService(db)
 user_service = UserService(db)
@@ -116,7 +133,6 @@ dp.include_router(user_router)
 
 # ==================== ФОНОВЫЙ ВОРКЕР НАПОМИНАНИЙ ====================
 async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentService):
-    """Фоновая задача для отправки напоминаний о неоплаченных заявках."""
     logger.info("Запуск воркера напоминаний")
     while True:
         try:
@@ -133,70 +149,86 @@ async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentServic
 
 
 async def on_startup():
+    print("🟢 on_startup: начало")
     start_time = time.time()
     logger.info("[START] Запуск бота, инициализация...")
 
-    # Создаём таблицы, если их нет (синхронно, в потоке)
     def create_tables():
         init_db_sync()
         logger.info("[OK] Таблицы созданы/проверены")
 
     await asyncio.to_thread(create_tables)
+    print("🟢 Таблицы созданы/проверены")
 
-    # Подключаемся к БД
+    print("🟢 Подключение к базе данных...")
     await db.connect()
     logger.info("[OK] Подключение к базе данных установлено")
+    print("🟢 Подключение к БД выполнено")
 
-    # Получаем уровень логирования из БД и перенастраиваем корневой логгер
+    # Получаем уровень логирования из БД через сервис
+    print("🟢 Чтение уровня логирования из БД...")
     try:
-        # Проверяем наличие метода get_log_level (на случай, если БД ещё не обновлена)
         if hasattr(db, 'get_log_level'):
             db_log_level = await db.get_log_level()
             log_level = getattr(logging, db_log_level.upper(), logging.INFO)
         else:
-            logger.warning("Метод get_log_level не найден в db. Использую INFO.")
+            logger.warning("Метод get_log_level не найден. Использую INFO.")
             log_level = logging.INFO
             db_log_level = "INFO"
     except Exception as e:
-        logger.warning(f"Не удалось получить уровень логирования из БД: {e}. Использую INFO.")
+        logger.warning(f"Не удалось получить уровень из БД: {e}. Использую INFO.")
         log_level = logging.INFO
         db_log_level = "INFO"
+    print(f"🟢 Уровень логирования из БД (через сервис): {db_log_level}")
 
-    # Настройка форматтера и обработчиков
+    # Дополнительная диагностика: прямой SQL-запрос
+    try:
+        import sqlite3
+        temp_conn = sqlite3.connect(config.DB_PATH)
+        temp_cursor = temp_conn.cursor()
+        temp_cursor.execute("SELECT value FROM system_settings WHERE key = 'log_level';")
+        row = temp_cursor.fetchone()
+        if row:
+            print(f"🔍 Прямой SQL-запрос: log_level = {row[0]}")
+        else:
+            print("🔍 Прямой SQL-запрос: запись не найдена")
+        temp_conn.close()
+    except Exception as e:
+        print(f"🔍 Ошибка при прямом SQL-запросе: {e}")
+
+    # Применяем уровень к корневому логгеру
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)  # чтобы все сообщения доходили до обработчиков
+    root_logger.setLevel(log_level)
 
-    # Очистим старые обработчики, если они были (например, от basicConfig)
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+    # Выводим информацию об обработчиках
+    print("Обработчики корневого логгера после настройки:")
+    for i, h in enumerate(root_logger.handlers):
+        print(f"  {i}: {h.__class__.__name__}, уровень={h.level}, форматтер={h.formatter._fmt if h.formatter else 'None'}")
 
-    # Создаём новые обработчики с нужным уровнем
-    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Тестовые сообщения
+    logger.debug("🔍 ТЕСТ: сообщение DEBUG через логгер")
+    logger.info("🔍 ТЕСТ: сообщение INFO через логгер")
+    logger.warning("🔍 ТЕСТ: сообщение WARNING через логгер")
 
-    # Консольный вывод (может быть проблема с кодировкой на Windows, поэтому эмодзи заменены на текст)
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(log_formatter)
-    console_handler.setLevel(log_level)
-
-    # Файловый вывод с ротацией (10 MB, 5 бэкапов)
-    file_handler = RotatingFileHandler('bot.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
-    file_handler.setFormatter(log_formatter)
-    file_handler.setLevel(logging.DEBUG)  # в файл пишем всё
-
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
+    # Сброс буферов
+    for h in root_logger.handlers:
+        if hasattr(h, 'flush'):
+            h.flush()
 
     # Устанавливаем уровни для шумных библиотек
     logging.getLogger('aiogram').setLevel(logging.WARNING)
     logging.getLogger('aiohttp').setLevel(logging.WARNING)
 
     logger.info(f"Уровень логирования установлен: {db_log_level} (из БД)")
+    print(f"🟢 Логгеры настроены")
 
     new_version = await db.increment_bot_version()
     logger.info(f"[OK] Версия бота: {new_version}")
+    print(f"🟢 Версия бота: {new_version}")
 
     elapsed = time.time() - start_time
     logger.info(f"[TIME] Время загрузки: {elapsed:.2f} секунд")
+    print(f"🟢 Время загрузки: {elapsed:.2f} сек")
 
     for admin_id in config.ADMIN_IDS:
         try:
@@ -209,8 +241,12 @@ async def on_startup():
                 f"Уровень логов: {db_log_level}",
                 parse_mode="HTML"
             )
+            print(f"🟢 Уведомление отправлено админу {admin_id}")
         except Exception as e:
             logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+            print(f"❌ Ошибка уведомления админа {admin_id}: {e}")
+
+    print("🟢 on_startup завершён")
 
 
 async def on_shutdown():
@@ -221,13 +257,38 @@ async def on_shutdown():
 
 
 async def main():
+    print("🟢 main: запуск...")
     logger.info("Запуск бота...")
+    try:
+        bot_info = await bot.get_me()
+        print(f"✅ Бот @{bot_info.username} подключён")
+    except Exception as e:
+        print(f"❌ Не удалось подключиться к Telegram API: {e}")
+        return
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("✅ Вебхук удалён")
+    except Exception as e:
+        print(f"⚠️ Не удалось удалить вебхук: {e}")
+
+    try:
+        webhook_info = await bot.get_webhook_info()
+        print(f"📡 Информация о вебхуке: url={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
+    except Exception as e:
+        print(f"⚠️ Не удалось получить информацию о вебхуке: {e}")
+
     await on_startup()
 
     asyncio.create_task(reminder_worker(bot, db, payment_service))
 
     try:
-        await dp.start_polling(bot)
+        print("🟢 Запуск polling с skip_updates=True...")
+        await dp.start_polling(bot, skip_updates=True)
+        print("🟢 Polling завершён (не должно происходить)")
+    except Exception as e:
+        print(f"❌ Ошибка в polling: {e}")
+        traceback.print_exc()
     finally:
         await on_shutdown()
 
@@ -236,6 +297,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        print("Ошибка при запуске:")
+        print("❌ Ошибка при запуске:")
         traceback.print_exc()
         sys.exit(1)
