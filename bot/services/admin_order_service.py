@@ -10,6 +10,7 @@ from aiogram import Bot
 from bot.services.db import Database
 from bot.services.crypto_wallets import CryptoWalletManager
 from bot.services.coupon_service import coupon_service
+from bot.services.partner_service import partner_service
 from bot.config.settings import config
 from bot.services.review_notifier import ask_for_review
 
@@ -127,6 +128,9 @@ class AdminOrderService:
         # Выдаём купоны за активность пользователю
         await coupon_service.check_and_give_activity_coupons(order.user_id)
 
+        # Начисляем партнёрские вознаграждения
+        await partner_service.process_order_reward(order)
+
         # Отправляем предложение оставить отзыв
         await ask_for_review(bot, order.user_id, order_id)
 
@@ -137,9 +141,6 @@ class AdminOrderService:
         }
 
     async def approve_order_manual(self, order_id: int, admin_id: int) -> bool:
-        """
-        Подготовка к ручному подтверждению (после получения оплаты).
-        """
         logger.info(f"[ADMIN {admin_id}] Ручное подтверждение заявки #{order_id}")
         order = await self.db.get_order(order_id)
         if not order or order.status != 'paid':
@@ -154,9 +155,6 @@ class AdminOrderService:
         admin_id: int,
         bot: Bot
     ) -> bool:
-        """
-        Завершение заявки после ввода хеша транзакции (ручной режим).
-        """
         logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
         order = await self.db.get_order(order_id)
         if not order:
@@ -182,15 +180,17 @@ class AdminOrderService:
             await uow.commit()
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена")
 
-        # Выдаём купоны за активность пользователю
+        # Выдаём купоны за активность
         await coupon_service.check_and_give_activity_coupons(order.user_id)
+
+        # Начисляем партнёрские вознаграждения
+        await partner_service.process_order_reward(order)
 
         # Отправляем предложение оставить отзыв
         await ask_for_review(bot, order.user_id, order_id)
         return True
 
     async def reject_order(self, order_id: int, admin_id: int) -> bool:
-        """Отклонение заявки (статус 'cancelled')."""
         logger.info(f"[ADMIN {admin_id}] Отклонение заявки #{order_id}")
         async with self.db.uow() as uow:
             await uow.orders.update_order_status(
@@ -200,11 +200,9 @@ class AdminOrderService:
                 admin_id
             )
             await uow.commit()
-        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} отклонена")
         return True
 
     async def request_receipt(self, order_id: int, user_id: int) -> bool:
-        """Запросить чек у пользователя (отправить напоминание)."""
         logger.debug(f"Запрос чека для заявки #{order_id}")
         order = await self.db.get_order(order_id)
         if not order:
@@ -217,7 +215,6 @@ class AdminOrderService:
         details: str,
         user_id: int
     ) -> bool:
-        """Сохраняет введённые админом платёжные реквизиты."""
         logger.info(f"Сохранение платёжных реквизитов для заявки #{order_id}")
         await self.db.set_order_manual_payment_details(order_id, details)
         return True

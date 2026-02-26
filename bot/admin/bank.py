@@ -20,7 +20,7 @@ router = Router()
 async def admin_bank_menu(callback: CallbackQuery):
     """Меню управления банковскими реквизитами."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         logger.warning(f"[ADMIN {admin_id}] Попытка доступа к меню банковских реквизитов без прав")
         return
@@ -52,7 +52,7 @@ async def admin_bank_menu(callback: CallbackQuery):
 async def admin_bank_add_start(callback: CallbackQuery, state: FSMContext):
     """Начало добавления новой банковской карты."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -157,7 +157,7 @@ async def admin_bank_finish(message: Message, state: FSMContext):
 async def admin_bank_list(callback: CallbackQuery):
     """Показывает список банковских карт с пагинацией."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -219,7 +219,7 @@ async def admin_bank_list(callback: CallbackQuery):
 async def admin_bank_delete_confirm(callback: CallbackQuery):
     """Подтверждение удаления карты."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -268,7 +268,7 @@ async def admin_bank_delete_confirm(callback: CallbackQuery):
 async def admin_bank_delete_execute(callback: CallbackQuery):
     """Исполнение удаления карты."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 

@@ -74,3 +74,6 @@ class AdminStates(StatesGroup):
     adding_activity_threshold_discount_on = State()
     adding_activity_threshold_valid_days = State()
     editing_activity_threshold_index = State()
+
+
+    setting_next_order_number = State()

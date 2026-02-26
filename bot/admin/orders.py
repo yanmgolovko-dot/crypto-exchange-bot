@@ -30,7 +30,7 @@ router = Router()
 async def admin_orders_menu(callback: CallbackQuery):
     """Меню управления заявками."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         logger.warning(f"[ADMIN {admin_id}] Попытка доступа без прав")
         return
@@ -58,7 +58,7 @@ async def admin_orders_menu(callback: CallbackQuery):
 async def admin_orders_pending(callback: CallbackQuery):
     """Список заявок, ожидающих оплаты (статус pending)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -95,7 +95,7 @@ async def admin_orders_pending(callback: CallbackQuery):
 async def admin_orders_paid(callback: CallbackQuery):
     """Список заявок на проверке (статус paid)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -132,7 +132,7 @@ async def admin_orders_paid(callback: CallbackQuery):
 async def admin_orders_completed(callback: CallbackQuery):
     """Список выполненных заявок (последние 20)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -165,7 +165,7 @@ async def admin_orders_completed(callback: CallbackQuery):
 async def admin_orders_cancelled(callback: CallbackQuery):
     """Список отменённых заявок (последние 20)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -198,7 +198,7 @@ async def admin_orders_cancelled(callback: CallbackQuery):
 async def admin_orders_search(callback: CallbackQuery, state: FSMContext):
     """Начало поиска заявки по ID."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -280,7 +280,7 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
 async def admin_orders_clear_confirm(callback: CallbackQuery):
     """Подтверждение удаления всех заявок."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -305,7 +305,7 @@ async def admin_orders_clear_confirm(callback: CallbackQuery):
 async def admin_orders_clear_execute(callback: CallbackQuery):
     """Исполнение удаления всех заявок."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -319,7 +319,7 @@ async def admin_orders_clear_execute(callback: CallbackQuery):
 async def admin_order_manage(callback: CallbackQuery, bot: Bot):
     """Показать детали конкретной заявки и кнопки управления."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -383,7 +383,7 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
 async def admin_order_check(callback: CallbackQuery, bot: Bot):
     """Проверка конкретной заявки со статусом paid (после загрузки чека)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -432,7 +432,7 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
 async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
     """Отправить пользователю напоминание об оплате (с проверкой лимита)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -477,7 +477,7 @@ async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
 async def admin_msg_start(callback: CallbackQuery, state: FSMContext):
     """Начать отправку сообщения клиенту."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -541,7 +541,7 @@ async def admin_approve_order(
 ):
     """Подтверждение заявки (авто или ручной режим)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -721,7 +721,7 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
 async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_service: AdminOrderService):
     """Принудительное завершение заявки без хеша (для экстренных случаев)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -773,7 +773,7 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
 async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_service: AdminOrderService):
     """Отклонение заявки."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -811,7 +811,7 @@ async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_serv
 async def admin_enter_payment_details_start(callback: CallbackQuery, state: FSMContext):
     """Начало ввода реквизитов для ручного режима."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 

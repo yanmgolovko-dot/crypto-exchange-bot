@@ -13,6 +13,8 @@ from .coupon_repository import CouponRepository
 from .activity_award_repository import ActivityAwardRepository
 from .ticket_repository import TicketRepository
 from .review_repository import ReviewRepository
+from .partner_repository import PartnerRepository
+from .admins_repository import AdminsRepository  # новый импорт
 from .unit_of_work import UnitOfWork
 from .base import db_retry
 
@@ -36,10 +38,11 @@ class Database:
         self.finance = FinanceRepository(self._connection)
         self.settings = SettingsRepository(self._connection)
         self.coupons = CouponRepository(self._connection)
-        # НОВЫЕ РЕПОЗИТОРИИ
         self.activity_awards = ActivityAwardRepository(self._connection)
         self.tickets = TicketRepository(self._connection)
         self.reviews = ReviewRepository(self._connection)
+        self.partners = PartnerRepository(self._connection)
+        self.admins = AdminsRepository(self._connection)  # новый репозиторий
 
         # Прокси-методы для обратной совместимости
         # Пользователи
@@ -129,6 +132,11 @@ class Database:
         self.use_coupon = self.coupons.use_coupon
         self.get_all_coupons = self.coupons.get_all_coupons
         self.toggle_coupon = self.coupons.toggle_coupon
+
+        # Партнёры
+        self.partners = PartnerRepository(self._connection)
+        # Админы
+        self.admins = AdminsRepository(self._connection)
 
         # Дополнительные методы
         self._backup_db = self._backup_db

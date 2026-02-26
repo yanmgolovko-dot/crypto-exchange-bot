@@ -10,30 +10,71 @@ from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.services.db import db
 from bot.services.crypto_api import crypto_api
 from bot.services.coupon_service import coupon_service
 from bot.services.review_service import review_service
+from bot.services.partner_service import partner_service
 from bot.keyboards import main_menu_keyboard
+from bot.admin.main import is_admin
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-def user_profile_keyboard():
-    keyboard = InlineKeyboardBuilder()
-    keyboard.button(text="📊 Моя статистика", callback_data="user_stats")
-    keyboard.button(text="💰 Бонусный баланс", callback_data="user_bonus")
-    keyboard.button(text="🎁 Мои промокоды", callback_data="user_promos")
-    keyboard.button(text="🎫 Мои купоны", callback_data="user_my_coupons")
-    keyboard.button(text="📝 Мои отзывы", callback_data="user_my_reviews")
-    keyboard.button(text="🔗 Реферальная программа", callback_data="user_referral")
-    keyboard.button(text="⚙️ Настройки", callback_data="user_settings")
-    keyboard.button(text="🔙 Главное меню", callback_data="user_back_main")
-    keyboard.adjust(1)
-    return keyboard.as_markup()
+async def get_user_profile_keyboard(user_id: int):
+    """
+    Создаёт красивую и удобную инлайн-клавиатуру для личного кабинета.
+    Группирует кнопки по смыслу, размещает по две в ряд.
+    """
+    kb = InlineKeyboardBuilder()
+
+    # Первая группа: статистика и бонусы
+    kb.button(text="📊 Статистика", callback_data="user_stats")
+    kb.button(text="💰 Бонусы", callback_data="user_bonus")
+
+    # Вторая группа: заявки и купоны
+    kb.button(text="📋 Мои заявки", callback_data="user_orders")
+    kb.button(text="🎫 Купоны", callback_data="user_my_coupons")
+
+    # Третья группа: промокоды и отзывы
+    kb.button(text="🎁 Промокоды", callback_data="user_promos")
+    kb.button(text="📝 Отзывы", callback_data="user_my_reviews")
+
+    # Четвёртая группа: рефералы и настройки
+    kb.button(text="🔗 Рефералы", callback_data="user_referral")
+    kb.button(text="⚙️ Настройки", callback_data="user_settings")
+
+    # Специальные кнопки для партнёров и админов
+    partner = await db.partners.get_partner(user_id)
+    if partner and partner.is_active:
+        kb.button(text="🤝 Партнёрский кабинет", callback_data="user_partner_cabinet")
+
+    if await is_admin(user_id):
+        kb.button(text="👑 Админка", callback_data="user_admin_panel")
+
+    # Кнопка выхода в главное меню
+    kb.button(text="🔙 Главное меню", callback_data="user_back_main")
+
+    # Устанавливаем количество кнопок в ряду: 2 для основных, одиночные для специальных
+    # Подсчитаем:
+    # 8 основных кнопок -> 4 ряда по 2.
+    # Затем, если есть партнёрская, добавим её отдельным рядом.
+    # Если есть админская, добавим ещё рядом.
+    # Выход отдельным рядом.
+    layout = [2, 2, 2, 2]  # для 8 основных
+    if partner and partner.is_active:
+        layout.append(1)
+    if await is_admin(user_id):
+        layout.append(1)
+    layout.append(1)  # выход
+    kb.adjust(*layout)
+
+    return kb.as_markup()
 
 
 @router.message(Command("profile"))
@@ -72,7 +113,7 @@ async def cmd_profile(message: Message):
         f"👤 <b>Личный кабинет</b>\n\n"
         f"<b>Информация:</b>\n"
         f"   ID: <code>{user.user_id}</code>\n"
-        f"   Имя: {user.first_name or 'Не указано'}\n"
+        f"   Имя: {escape_html(user.first_name or 'Не указано')}\n"
         f"   Дата регистрации: {user.created_at[:10] if user.created_at else 'N/A'}\n\n"
         f"<b>Статистика:</b>\n"
         f"   Всего обменов: {stats['total_orders']}\n"
@@ -83,14 +124,91 @@ async def cmd_profile(message: Message):
     )
 
     if user.referral_code:
-        text += f"<b>Реферальный код:</b> <code>{user.referral_code}</code>\n\n"
+        text += f"<b>Реферальный код:</b> <code>{escape_html(user.referral_code)}</code>\n\n"
 
     text += "Выберите раздел:"
 
-    await message.answer(text, reply_markup=user_profile_keyboard(), parse_mode="HTML")
+    kb = await get_user_profile_keyboard(user_id)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
     logger.debug(f"[{user_id}] Информация профиля отправлена")
 
 
+@router.callback_query(F.data == "user_orders")
+async def user_orders(callback: CallbackQuery):
+    """Показывает список заявок пользователя."""
+    user_id = callback.from_user.id
+    orders = await db.get_user_orders(user_id, limit=10)
+    if not orders:
+        text = "📋 У вас пока нет заявок."
+    else:
+        text = "📋 <b>Ваши заявки</b>\n\n"
+        for order in orders:
+            status_emoji = {
+                "pending": "⏳",
+                "paid": "💳",
+                "completed": "✅",
+                "cancelled": "❌"
+            }.get(order.status, "❓")
+            status_text = {
+                "pending": "Ожидает",
+                "paid": "Проверка",
+                "completed": "Выполнена",
+                "cancelled": "Отменена"
+            }.get(order.status, "Неизв.")
+            display_number = order.public_order_number or order.id
+            text += (
+                f"{status_emoji} <b>#{display_number}</b> | {order.crypto_type}\n"
+                f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f}\n"
+                f"   {status_text}\n"
+                f"   {order.created_at[:10]}\n\n"
+            )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 Назад", callback_data="user_back_profile")
+    await safe_edit_message(callback.message, text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "user_partner_cabinet")
+async def user_partner_cabinet(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки «Партнёрский кабинет»."""
+    user_id = callback.from_user.id
+    logger.info(f"[{user_id}] Нажата кнопка партнёрского кабинета")
+
+    partner = await db.partners.get_partner(user_id)
+    logger.info(f"Результат get_partner: {partner}")
+
+    if not partner:
+        logger.warning(f"Партнёрская запись отсутствует для {user_id}")
+        await callback.answer("⛔ У вас нет доступа к партнёрскому кабинету.", show_alert=True)
+        return
+
+    logger.info(f"Объект партнёра: is_active={partner.is_active}, balance={partner.balance}")
+
+    if not partner.is_active:
+        logger.warning(f"Партнёрская запись неактивна для {user_id}")
+        await callback.answer("⛔ Ваш партнёрский аккаунт неактивен.", show_alert=True)
+        return
+
+    logger.info(f"Партнёрский доступ разрешён для {user_id}. Переходим в партнёрский кабинет.")
+
+    from bot.handlers.partner import partner_entry
+    await partner_entry(callback.from_user.id, callback.bot)  # <-- ИСПРАВЛЕНО
+    await callback.answer()
+
+
+@router.callback_query(F.data == "user_admin_panel")
+async def user_admin_panel(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки «Админка»."""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ У вас нет доступа к админ-панели.", show_alert=True)
+        return
+
+    from bot.admin.main import cmd_admin
+    await cmd_admin(callback.message, state)
+    await callback.answer()
+
+
+# ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 @router.callback_query(F.data == "user_stats")
 async def user_stats(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -131,7 +249,7 @@ async def user_stats(callback: CallbackQuery):
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -160,7 +278,7 @@ async def user_bonus(callback: CallbackQuery):
     keyboard.button(text="🔗 Реферальная программа", callback_data="user_referral")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -191,14 +309,14 @@ async def user_promos(callback: CallbackQuery):
         if available:
             text += "<b>Доступные для использования:</b>\n"
             for promo in available:
-                text += f"• <code>{promo.code}</code> — скидка {promo.discount_percent}% (осталось {promo.max_uses - promo.used_count} шт.)\n"
+                text += f"• <code>{escape_html(promo.code)}</code> — скидка {promo.discount_percent}% (осталось {promo.max_uses - promo.used_count} шт.)\n"
         else:
             text += "У вас нет доступных промокодов.\n"
 
         if used:
             text += "\n<b>Использованные:</b>\n"
             for promo in used:
-                text += f"• {promo.code} — скидка {promo.discount_percent}%\n"
+                text += f"• {escape_html(promo.code)} — скидка {promo.discount_percent}%\n"
 
         if not available and not used:
             text = "🎁 <b>Мои промокоды</b>\n\nУ вас пока нет промокодов. Следите за акциями!"
@@ -208,7 +326,7 @@ async def user_promos(callback: CallbackQuery):
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -234,15 +352,15 @@ async def user_my_coupons(callback: CallbackQuery):
                 valid_date = coup.valid_to[:10]
                 valid_str = f"до {valid_date}"
             text += (
-                f"• <b>{coup.code}</b>\n"
+                f"• <b>{escape_html(coup.code)}</b>\n"
                 f"  Скидка: {discount_str} {on_str}\n"
-                f"  {coup.description or '—'}\n"
+                f"  {escape_html(coup.description or '—')}\n"
                 f"  Действует: {valid_str}\n\n"
             )
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -260,14 +378,14 @@ async def user_my_reviews(callback: CallbackQuery):
             status = "✅ Опубликован" if rev.is_approved else "⏳ На модерации"
             rating_stars = "⭐" * rev.rating + "☆" * (5 - rev.rating)
             text += f"Заявка #{rev.order_id} {rating_stars} ({status})\n"
-            text += f"Комментарий: {rev.comment or '—'}\n"
+            text += f"Комментарий: {escape_html(rev.comment or '—')}\n"
             if rev.admin_reply:
-                text += f"<i>Ответ: {rev.admin_reply}</i>\n"
+                text += f"<i>Ответ: {escape_html(rev.admin_reply)}</i>\n"
             text += f"—— {rev.created_at[:10]}\n\n"
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -288,8 +406,8 @@ async def user_referral(callback: CallbackQuery):
         f"🔗 <b>Реферальная программа</b>\n\n"
         f"Приглашайте друзей и получайте <b>1%</b> от каждого их обмена!\n\n"
         f"<b>Ваша реферальная ссылка:</b>\n"
-        f"<code>{referral_link}</code>\n\n"
-        f"<b>Ваш реферальный код:</b> <code>{user.referral_code}</code>\n\n"
+        f"<code>{escape_html(referral_link)}</code>\n\n"
+        f"<b>Ваш реферальный код:</b> <code>{escape_html(user.referral_code or '')}</code>\n\n"
         f"Поделитесь ссылкой с друзьями, и когда они совершат обмен, вы автоматически получите бонус."
     )
 
@@ -297,7 +415,7 @@ async def user_referral(callback: CallbackQuery):
     keyboard.button(text="📤 Поделиться", url=f"https://t.me/share/url?url={referral_link}&text=Крипто-обменник с лучшими курсами!")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
 
 
@@ -314,7 +432,7 @@ async def user_settings(callback: CallbackQuery):
     text = (
         f"⚙️ <b>Настройки</b>\n\n"
         f"<b>Уведомления:</b> {'✅ Включены' if user.notifications_enabled else '❌ Отключены'}\n"
-        f"<b>Язык:</b> {user.language or 'ru'}\n\n"
+        f"<b>Язык:</b> {escape_html(user.language or 'ru')}\n\n"
         f"Выберите настройку для изменения:"
     )
 
@@ -322,7 +440,7 @@ async def user_settings(callback: CallbackQuery):
     keyboard.button(text="🔔 Уведомления", callback_data="user_toggle_notifications")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -352,6 +470,6 @@ async def user_back_profile(callback: CallbackQuery):
 
 @router.callback_query(F.data == "user_back_main")
 async def user_back_main(callback: CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=None)
-    await callback.message.answer("Вы вернулись в главное меню.", reply_markup=main_menu_keyboard())
+    await callback.message.delete()
+    await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
     await callback.answer()

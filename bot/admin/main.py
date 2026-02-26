@@ -12,25 +12,49 @@ from datetime import datetime
 
 from bot.services.db import db
 from bot.config.settings import config
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-def is_admin(user_id: int) -> bool:
-    """Проверка, является ли пользователь администратором."""
-    result = user_id in config.ADMIN_IDS
-    if not result:
-        logger.warning(f"Проверка is_admin: user_id={user_id}, ADMIN_IDS={config.ADMIN_IDS}")
-    return result
+async def is_admin(user_id: int) -> bool:
+    """
+    Проверяет, является ли пользователь администратором.
+    Сначала проверяет SUPER_ADMIN_IDS из .env, затем таблицу admins в БД.
+    """
+    # Проверка по .env (суперадмины)
+    if user_id in config.ADMIN_IDS:
+        return True
+
+    # Проверка по таблице admins через репозиторий
+    try:
+        return await db.admins.is_admin(user_id)
+    except AttributeError:
+        # Если репозиторий ещё не добавлен, используем прямой запрос (для обратной совместимости)
+        async with db._connection.conn.execute(
+            "SELECT 1 FROM admins WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            result = await cursor.fetchone()
+            return result is not None
 
 
 async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int = None):
-    """
-    Отправка уведомления всем администраторам с поддержкой HTML и опциональной клавиатурой.
-    Параметр exclude_id позволяет исключить одного админа (например, инициатора действия).
-    """
-    for admin_id in config.ADMIN_IDS:
+    """Отправка уведомления всем администраторам (из .env и из БД)."""
+    # Собираем всех админов: из .env и из БД
+    admin_ids = set(config.ADMIN_IDS)
+    try:
+        admins_from_db = await db.admins.get_all_admins()
+        for admin in admins_from_db:
+            admin_ids.add(admin.user_id)
+    except AttributeError:
+        # fallback: прямой запрос
+        async with db._connection.conn.execute("SELECT user_id FROM admins") as cursor:
+            rows = await cursor.fetchall()
+            for row in rows:
+                admin_ids.add(row[0])
+
+    for admin_id in admin_ids:
         if exclude_id and admin_id == exclude_id:
             continue
         try:
@@ -46,10 +70,7 @@ async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int 
 
 
 async def send_receipt(chat_id, file_path, caption, bot: Bot):
-    """
-    Отправляет чек в зависимости от расширения файла.
-    Если .pdf – отправляет как документ, иначе как фото.
-    """
+    """Отправляет чек в зависимости от расширения файла."""
     if not file_path or not os.path.exists(file_path):
         return False
     try:
@@ -67,27 +88,24 @@ def admin_main_keyboard():
     """Главная клавиатура админ-панели."""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📋 Заявки", callback_data="admin_orders_menu")
-    keyboard.button(text="📝 Отзывы", callback_data="admin_reviews_menu")
-    keyboard.button(text="📢 Рассылка", callback_data="admin_broadcast")
     keyboard.button(text="💰 Финансы", callback_data="admin_finance_menu")
-    keyboard.button(text="⚙️ Настройки", callback_data="admin_settings_menu")
     keyboard.button(text="👥 Пользователи", callback_data="admin_users_menu")
-    keyboard.button(text="🎁 Акции", callback_data="admin_promo_menu")
-    keyboard.button(text="🎫 Купоны", callback_data="admin_coupons_menu")   # НОВАЯ КНОПКА
-    keyboard.button(text="💳 Реквизиты", callback_data="admin_bank_menu")
-    keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
-    keyboard.button(text="📋 Тикеты", callback_data="admin_tickets_menu")
     keyboard.button(text="💎 Кошельки", callback_data="admin_wallets_menu")
+    keyboard.button(text="🎯 Маркетинг", callback_data="admin_marketing_menu")
+    keyboard.button(text="🪄 Фейк-менеджер", callback_data="admin_fake_menu")
+    keyboard.button(text="📢 Рассылка", callback_data="admin_broadcast")
+    keyboard.button(text="⚙️ Настройки", callback_data="admin_settings_menu")
     keyboard.button(text="🔍 Диагностика", callback_data="admin_diagnostic")
-    # Настройте количество кнопок в ряду под ваше меню (например, 3,3,3,1)
-    keyboard.adjust(3, 3, 3, 1)
+    keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
+    keyboard.button(text="👑 Управление админами", callback_data="admin_manage_admins")
+    keyboard.adjust(2, 2, 2, 1, 1, 1, 1)
     return keyboard.as_markup()
 
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
     """Главное меню админ-панели."""
-    if not is_admin(message.from_user.id):
+    if not await is_admin(message.from_user.id):
         await message.answer("⛔ У вас нет доступа к админ-панели.")
         return
 
@@ -126,7 +144,7 @@ async def cmd_admin(message: Message, state: FSMContext):
 @router.callback_query(F.data == "admin_dashboard")
 async def admin_dashboard(callback: CallbackQuery):
     """Подробный дашборд с финансовой статистикой."""
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -162,15 +180,14 @@ async def admin_dashboard(callback: CallbackQuery):
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_back_main")
 async def admin_back_main(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Назад' - возвращает в главное меню админки."""
-    if not is_admin(callback.from_user.id):
-        logger.warning(f"Доступ запрещён. User ID: {callback.from_user.id}, ADMIN_IDS: {config.ADMIN_IDS}")
+    """Возврат в главное меню админки."""
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
     await state.clear()

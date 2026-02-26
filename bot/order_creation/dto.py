@@ -27,7 +27,8 @@ class OrderCreationData:
     net_amount: Optional[float] = None   # сумма к получению (без комиссии)
     amount_crypto: Optional[float] = None # количество криптовалюты к выдаче
     fee_percent: Optional[float] = None  # применённая комиссия (с учётом скидки)
-    order_id: Optional[int] = None       # ID созданной заявки
+    order_id: Optional[int] = None       # ID созданной заявки (внутренний)
+    public_order_number: Optional[int] = None  # публичный номер заявки
 
     # Флаги для навигации "Назад"
     back_to_crypto: bool = False        # вернуться к выбору криптовалюты

@@ -1,0 +1,238 @@
+# bot/handlers/partner.py
+"""Партнёрский кабинет."""
+
+import logging
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from bot.services.db import db
+from bot.services.partner_service import partner_service
+from bot.keyboards import main_menu_keyboard
+from bot.config.settings import config
+from bot.utils.helpers import safe_edit_message, escape_html
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+class WithdrawStates(StatesGroup):
+    waiting_amount = State()
+    waiting_method = State()
+    waiting_details = State()
+
+
+def partner_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📊 Моя статистика", callback_data="partner_stats")
+    kb.button(text="🔗 Реферальная ссылка", callback_data="partner_link")
+    kb.button(text="💰 Запросить вывод", callback_data="partner_withdraw")
+    kb.button(text="📜 История выводов", callback_data="partner_withdraw_history")
+    kb.button(text="🔙 Назад", callback_data="partner_back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def partner_entry(user_id: int, bot: Bot):
+    """Вход в партнёрский кабинет."""
+    logger.info(f"partner_entry: вход для пользователя {user_id}")
+    
+    partner = await db.partners.get_partner(user_id)
+    logger.info(f"partner_entry: результат get_partner = {partner}")
+    
+    if not partner or not partner.is_active:
+        logger.warning(f"partner_entry: доступ запрещён для {user_id}, partner={partner}")
+        await bot.send_message(user_id, "⛔ У вас нет доступа к партнёрскому кабинету.")
+        return
+    
+    logger.info(f"partner_entry: доступ разрешён, отправляем клавиатуру")
+    await bot.send_message(
+        user_id,
+        "🤝 Добро пожаловать в партнёрский кабинет!",
+        reply_markup=partner_keyboard()
+    )
+    logger.info(f"partner_entry: сообщение отправлено")
+
+
+@router.message(Command("partner"))
+async def cmd_partner(message: Message):
+    """Альтернативный вход по команде /partner."""
+    await partner_entry(message.from_user.id, message.bot)
+
+
+@router.callback_query(F.data == "partner_stats")
+async def partner_stats(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    partner = await db.partners.get_partner(user_id)
+    if not partner:
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    stats = await partner_service.get_partner_stats(user_id)
+    if not stats:
+        await callback.answer("Ошибка загрузки статистики", show_alert=True)
+        return
+    text = (
+        f"📊 <b>Ваша статистика</b>\n\n"
+        f"💰 Баланс: {stats['balance']:.2f} ₽\n"
+        f"🏆 Всего заработано: {stats['total_earned']:.2f} ₽\n"
+        f"👥 Рефералы:\n"
+    )
+    for level, count in stats['referrals'].items():
+        text += f"  Уровень {level.split('_')[1]}: {count}\n"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 Назад", callback_data="partner_back")
+    await safe_edit_message(callback.message, text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "partner_link")
+async def partner_link(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    partner = await db.partners.get_partner(user_id)
+    if not partner:
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    bot_info = await callback.bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start=ref{user_id}"
+    text = (
+        f"🔗 <b>Ваша реферальная ссылка:</b>\n"
+        f"<code>{escape_html(link)}</code>\n\n"
+        f"Отправляйте её друзьям. Когда они совершат первый обмен, вы получите бонус!"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 Назад", callback_data="partner_back")
+    await safe_edit_message(callback.message, text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "partner_withdraw")
+async def partner_withdraw_start(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    partner = await db.partners.get_partner(user_id)
+    if not partner:
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    settings = await db.partners.get_settings()
+    await state.set_state(WithdrawStates.waiting_amount)
+    await safe_edit_message(
+        callback.message,
+        f"💰 Введите сумму для вывода (мин. {settings.min_withdraw} ₽):"
+    )
+    await callback.answer()
+
+
+@router.message(WithdrawStates.waiting_amount)
+async def withdraw_amount_received(message: Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное число.")
+        return
+    await state.update_data(amount=amount)
+    await state.set_state(WithdrawStates.waiting_method)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💳 Банковская карта", callback_data="withdraw_method_card")
+    kb.button(text="₿ Bitcoin (BTC)", callback_data="withdraw_method_btc")
+    kb.button(text="Ł Litecoin (LTC)", callback_data="withdraw_method_ltc")
+    kb.button(text="💵 USDT (TRC20)", callback_data="withdraw_method_usdt")
+    kb.button(text="🔙 Отмена", callback_data="withdraw_cancel")
+    kb.adjust(1)
+    await message.answer("Выберите способ вывода:", reply_markup=kb.as_markup())
+
+
+@router.callback_query(WithdrawStates.waiting_method)
+async def withdraw_method_chosen(callback: CallbackQuery, state: FSMContext):
+    method = callback.data.split("_")[-1]  # card, btc, ltc, usdt
+    await state.update_data(method=method)
+    await state.set_state(WithdrawStates.waiting_details)
+    prompts = {
+        'card': "Введите номер карты и банк (например: 1234 5678 9012 3456, Сбербанк)",
+        'btc': "Введите ваш Bitcoin-адрес",
+        'ltc': "Введите ваш Litecoin-адрес",
+        'usdt': "Введите ваш USDT-адрес (сеть TRC20)"
+    }
+    await safe_edit_message(callback.message, prompts.get(method, "Введите реквизиты:"))
+    await callback.answer()
+
+
+@router.message(WithdrawStates.waiting_details)
+async def withdraw_details_received(message: Message, state: FSMContext):
+    details = message.text.strip()
+    data = await state.get_data()
+    amount = data['amount']
+    method = data['method']
+
+    user_id = message.from_user.id
+    success, msg, request_id = await partner_service.request_withdraw(
+        user_id, amount, method, details
+    )
+    if success:
+        await message.answer(
+            f"✅ {msg}\n\nВаша заявка будет обработана администратором."
+        )
+        # Уведомляем админов
+        admin_text = (
+            f"💰 <b>Новая заявка на вывод</b>\n"
+            f"Партнёр: {escape_html(message.from_user.username or str(user_id))} (ID: {user_id})\n"
+            f"Сумма: {amount:.2f} ₽\n"
+            f"Способ: {escape_html(method)}\n"
+            f"Реквизиты: {escape_html(details)}\n\n"
+            f"Обработать: /admin"
+        )
+        from bot.admin.main import notify_admins
+        await notify_admins(message.bot, admin_text)
+    else:
+        await message.answer(f"❌ {msg}")
+    await state.clear()
+    await partner_entry(user_id, message.bot)
+
+
+@router.callback_query(F.data == "withdraw_cancel")
+async def withdraw_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await partner_entry(callback.from_user.id, callback.bot)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "partner_withdraw_history")
+async def partner_withdraw_history(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    partner = await db.partners.get_partner(user_id)
+    if not partner:
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    requests = await db.partners.get_user_withdraw_requests(user_id)
+    if not requests:
+        text = "📜 У вас пока нет заявок на вывод."
+    else:
+        text = "📜 <b>История выводов</b>\n\n"
+        for req in requests:
+            status_emoji = {
+                'pending': '⏳',
+                'approved': '✅',
+                'rejected': '❌'
+            }.get(req.status, '❓')
+            text += (
+                f"{status_emoji} #{req.id} от {req.created_at[:10]}\n"
+                f"   Сумма: {req.amount:.2f} ₽, способ: {escape_html(req.payment_method or '')}\n"
+                f"   Статус: {req.status}\n"
+            )
+            if req.admin_comment:
+                text += f"   Комментарий: {escape_html(req.admin_comment)}\n"
+            text += "\n"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 Назад", callback_data="partner_back")
+    await safe_edit_message(callback.message, text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "partner_back")
+async def partner_back(callback: CallbackQuery):
+    await partner_entry(callback.from_user.id, callback.bot)
+    await callback.answer()

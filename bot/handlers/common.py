@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from bot.config.settings import config
+from bot.utils.helpers import escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -26,4 +27,7 @@ async def catch_all_messages(message: Message):
 
     # Отвечаем только администраторам, чтобы не спамить обычным пользователям
     if user_id in config.ADMIN_IDS:
-        await message.answer(f"📨 Получено сообщение:\n{text}\n\n(Это сообщение не было обработано ни одним хендлером.)")
+        await message.answer(
+            f"📨 Получено сообщение:\n{escape_html(text)}\n\n"
+            f"(Это сообщение не было обработано ни одним хендлером.)"
+        )

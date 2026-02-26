@@ -1,2 +1,3 @@
 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
 пороль бота ян19032001
+git remote set-url origin https://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@github.com/yanmgolovko-dot/crypto-exchange-bot.git

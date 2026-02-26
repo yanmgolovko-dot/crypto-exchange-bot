@@ -10,6 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.services.db import db
 from bot.admin.main import is_admin
 from bot.admin.states import AdminStates
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -19,7 +20,7 @@ router = Router()
 async def admin_coupons_menu(callback: CallbackQuery):
     """Меню управления купонами."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         logger.warning(f"[ADMIN {admin_id}] Попытка доступа к меню купонов без прав")
         return
@@ -40,14 +41,14 @@ async def admin_coupons_menu(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(
+    text = (
         f"🎫 <b>Управление купонами</b>\n\n"
         f"Всего купонов: {len(coupons)}\n"
         f"Активных: {active_count}\n\n"
-        f"Выберите действие:",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
+        f"Выберите действие:"
     )
+
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -55,17 +56,14 @@ async def admin_coupons_menu(callback: CallbackQuery):
 async def admin_coupon_create_start(callback: CallbackQuery, state: FSMContext):
     """Начало создания купона (запрос кода)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     logger.info(f"[ADMIN {admin_id}] Начало создания купона")
     await state.set_state(AdminStates.creating_coupon_code)
-    await callback.message.edit_text(
-        "🎫 <b>Создание купона</b>\n\n"
-        "Введите код купона (например: SUMMER2026):",
-        parse_mode="HTML"
-    )
+    text = "🎫 <b>Создание купона</b>\n\nВведите код купона (например: SUMMER2026):"
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -98,10 +96,8 @@ async def admin_coupon_discount_value(callback: CallbackQuery, state: FSMContext
     discount_type = callback.data.split("_")[-1]  # percent или fixed
     await state.update_data(coupon_discount_type=discount_type)
     await state.set_state(AdminStates.creating_coupon_discount_value)
-    await callback.message.edit_text(
-        f"Введите значение скидки:\n"
-        f"{' (в процентах, например 10)' if discount_type == 'percent' else ' (в рублях, например 500)'}:"
-    )
+    text = f"Введите значение скидки:\n{' (в процентах, например 10)' if discount_type == 'percent' else ' (в рублях, например 500)'}:"
+    await safe_edit_message(callback.message, text)
     await callback.answer()
 
 
@@ -134,7 +130,7 @@ async def admin_coupon_limits(callback: CallbackQuery, state: FSMContext):
     discount_on = callback.data.split("_")[-1]  # order или commission
     await state.update_data(coupon_discount_on=discount_on)
     await state.set_state(AdminStates.creating_coupon_limits)
-    await callback.message.edit_text(
+    text = (
         "Введите лимиты через пробел (или пропустите, нажав Enter):\n\n"
         "1. Общее максимальное количество использований (0 или пусто – безлимит)\n"
         "2. Максимум использований на одного пользователя (0 или пусто – безлимит)\n"
@@ -142,6 +138,7 @@ async def admin_coupon_limits(callback: CallbackQuery, state: FSMContext):
         "Пример: 100 1 1000  (100 всего, 1 на пользователя, мин. сумма 1000 ₽)\n"
         "Или оставьте пустым для безлимита."
     )
+    await safe_edit_message(callback.message, text)
     await callback.answer()
 
 
@@ -208,19 +205,20 @@ async def admin_coupon_finish(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    await message.answer(
+    text = (
         f"✅ Купон создан!\n\n"
-        f"Код: <code>{data['coupon_code']}</code>\n"
+        f"Код: <code>{escape_html(data['coupon_code'])}</code>\n"
         f"Тип: {'Процент' if data['coupon_discount_type'] == 'percent' else 'Фиксированная сумма'}\n"
         f"Значение: {data['coupon_discount_value']}\n"
         f"Применяется: {'на всю сумму' if data['coupon_discount_on'] == 'order' else 'на комиссию'}\n"
         f"Лимиты: общий {data.get('coupon_max_uses_total', '∞')}, на пользователя {data.get('coupon_max_uses_per_user', '∞')}\n"
         f"Мин. сумма: {data.get('coupon_min_order_amount', 0)} ₽\n"
         f"Срок: {data.get('coupon_valid_days', 'бессрочно')} дней\n"
-        f"Описание: {description or '—'}",
-        reply_markup=InlineKeyboardBuilder().button(text="🔙 К купонам", callback_data="admin_coupons_menu").as_markup(),
-        parse_mode="HTML"
+        f"Описание: {escape_html(description or '—')}"
     )
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 К купонам", callback_data="admin_coupons_menu")
+    await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await state.clear()
 
 
@@ -228,7 +226,7 @@ async def admin_coupon_finish(message: Message, state: FSMContext):
 async def admin_coupon_list(callback: CallbackQuery):
     """Показывает список всех купонов."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -241,10 +239,10 @@ async def admin_coupon_list(callback: CallbackQuery):
         return
 
     if not coupons:
-        await callback.message.edit_text(
-            "📭 Список купонов пуст.\n\nДобавьте купон через меню.",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="admin_coupons_menu").as_markup()
-        )
+        text = "📭 Список купонов пуст.\n\nДобавьте купон через меню."
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 Назад", callback_data="admin_coupons_menu")
+        await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
         await callback.answer()
         return
 
@@ -256,13 +254,13 @@ async def admin_coupon_list(callback: CallbackQuery):
         expiry = coup.valid_to[:10] if coup.valid_to else "бессрочно"
         discount_type_str = "%" if coup.discount_type == "percent" else "₽"
         text += (
-            f"{status} <b>{coup.code}</b>\n"
+            f"{status} <b>{escape_html(coup.code)}</b>\n"
             f"   Скидка: {coup.discount_value}{discount_type_str} на "
             f"{'всю сумму' if coup.discount_on == 'order' else 'комиссию'}\n"
             f"   Использовано: {coup.used_count}/{coup.max_uses_total or '∞'}\n"
             f"   Мин. сумма: {coup.min_order_amount} ₽\n"
             f"   Действует до: {expiry}\n"
-            f"   Описание: {coup.description or '—'}\n\n"
+            f"   Описание: {escape_html(coup.description or '—')}\n\n"
         )
         if coup.is_active:
             keyboard.button(text=f"❌ Деактивировать {coup.code}", callback_data=f"admin_coupon_toggle_{coup.id}")
@@ -272,7 +270,7 @@ async def admin_coupon_list(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="admin_coupons_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -280,7 +278,7 @@ async def admin_coupon_list(callback: CallbackQuery):
 async def admin_coupon_toggle(callback: CallbackQuery):
     """Активация/деактивация купона."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 

@@ -10,6 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.services.db import db
 from bot.admin.main import is_admin
 from bot.admin.states import AdminStates
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -19,7 +20,7 @@ router = Router()
 async def admin_promo_menu(callback: CallbackQuery):
     """Меню управления промокодами."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         logger.warning(f"[ADMIN {admin_id}] Попытка доступа к меню промокодов без прав")
         return
@@ -41,14 +42,14 @@ async def admin_promo_menu(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(
+    text = (
         f"🎁 <b>Управление акциями</b>\n\n"
         f"Всего промокодов: {len(promos)}\n"
         f"Активных: {active_count}\n\n"
-        f"Выберите действие:",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
+        f"Выберите действие:"
     )
+
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -56,18 +57,15 @@ async def admin_promo_menu(callback: CallbackQuery):
 async def admin_promo_create_start(callback: CallbackQuery, state: FSMContext):
     """Начало создания промокода (запрос кода)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     logger.info(f"[ADMIN {admin_id}] Начало создания промокода")
     await state.set_state(AdminStates.creating_promo_code)
 
-    await callback.message.edit_text(
-        "🎁 <b>Создание промокода</b>\n\n"
-        "Введите код промокода (например: SUMMER2024):",
-        parse_mode="HTML"
-    )
+    text = "🎁 <b>Создание промокода</b>\n\nВведите код промокода (например: SUMMER2024):"
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -168,15 +166,16 @@ async def admin_promo_finish(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    await message.answer(
+    text = (
         f"✅ Промокод создан!\n\n"
-        f"Код: <code>{data['promo_code']}</code>\n"
+        f"Код: <code>{escape_html(data['promo_code'])}</code>\n"
         f"Скидка: {data['promo_discount']}%\n"
         f"Использований: {data['promo_uses']}\n"
-        f"Срок: {days} дней",
-        reply_markup=InlineKeyboardBuilder().button(text="🔙 К акциям", callback_data="admin_promo_menu").as_markup(),
-        parse_mode="HTML"
+        f"Срок: {days} дней"
     )
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 К акциям", callback_data="admin_promo_menu")
+    await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await state.clear()
 
 
@@ -184,7 +183,7 @@ async def admin_promo_finish(message: Message, state: FSMContext):
 async def admin_promo_list(callback: CallbackQuery):
     """Показывает список всех промокодов."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -199,10 +198,10 @@ async def admin_promo_list(callback: CallbackQuery):
         return
 
     if not promos:
-        await callback.message.edit_text(
-            "📭 Список промокодов пуст.\n\nДобавьте промокод через меню.",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="admin_promo_menu").as_markup()
-        )
+        text = "📭 Список промокодов пуст.\n\nДобавьте промокод через меню."
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 Назад", callback_data="admin_promo_menu")
+        await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
         await callback.answer()
         return
 
@@ -213,11 +212,11 @@ async def admin_promo_list(callback: CallbackQuery):
         status = "✅" if promo.is_active else "❌"
         expiry = promo.valid_to[:10] if promo.valid_to else "бессрочно"
         text += (
-            f"{status} <b>{promo.code}</b>\n"
+            f"{status} <b>{escape_html(promo.code)}</b>\n"
             f"   Скидка: {promo.discount_percent}%\n"
             f"   Использовано: {promo.used_count}/{promo.max_uses}\n"
             f"   Действует до: {expiry}\n"
-            f"   Описание: {promo.description or '—'}\n\n"
+            f"   Описание: {escape_html(promo.description or '—')}\n\n"
         )
         if promo.is_active:
             keyboard.button(text=f"❌ Деактивировать {promo.code}", callback_data=f"admin_promo_toggle_{promo.id}")
@@ -227,7 +226,7 @@ async def admin_promo_list(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="admin_promo_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -235,7 +234,7 @@ async def admin_promo_list(callback: CallbackQuery):
 async def admin_promo_toggle(callback: CallbackQuery):
     """Активация/деактивация промокода."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 

@@ -15,6 +15,7 @@ from bot.services.db import db
 from bot.services.admin_user_service import AdminUserService
 from bot.admin.main import is_admin
 from bot.admin.states import AdminStates
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -22,11 +23,9 @@ router = Router()
 
 @router.callback_query(F.data == "admin_users_menu")
 async def admin_users_menu(callback: CallbackQuery):
-    """
-    Главное меню управления пользователями.
-    """
+    """Главное меню управления пользователями."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         logger.warning(f"[ADMIN {admin_id}] Попытка доступа к меню пользователей без прав")
         return
@@ -41,21 +40,16 @@ async def admin_users_menu(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(
-        "👥 <b>Управление пользователями</b>\n\nВыберите действие:",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
+    text = "👥 <b>Управление пользователями</b>\n\nВыберите действие:"
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("admin_users_all"))
 async def admin_users_all(callback: CallbackQuery, admin_user_service: AdminUserService):
-    """
-    Показывает список всех пользователей с пагинацией.
-    """
+    """Показывает список всех пользователей с пагинацией."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -75,10 +69,10 @@ async def admin_users_all(callback: CallbackQuery, admin_user_service: AdminUser
         return
 
     if not users:
-        await callback.message.edit_text(
-            "📭 Список пользователей пуст.",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="admin_users_menu").as_markup()
-        )
+        text = "📭 Список пользователей пуст."
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 Назад", callback_data="admin_users_menu")
+        await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
         await callback.answer()
         return
 
@@ -89,7 +83,7 @@ async def admin_users_all(callback: CallbackQuery, admin_user_service: AdminUser
         stats = await admin_user_service.db.get_user_stats(user.user_id)
         spent = stats['total_volume']
         status = "🚫" if user.is_banned else "✅"
-        safe_name = html.escape(user.username or user.first_name or str(user.user_id))
+        safe_name = escape_html(user.username or user.first_name or str(user.user_id))
         if len(safe_name) > 20:
             safe_name = safe_name[:17] + "..."
 
@@ -109,35 +103,28 @@ async def admin_users_all(callback: CallbackQuery, admin_user_service: AdminUser
     keyboard.button(text="🔙 Назад", callback_data="admin_users_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_user_search")
 async def admin_user_search_start(callback: CallbackQuery, state: FSMContext):
-    """
-    Начало поиска пользователя по ID или username.
-    """
+    """Начало поиска пользователя по ID или username."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     logger.info(f"[ADMIN {admin_id}] Запрос поиска пользователя")
     await state.set_state(AdminStates.searching_user)
-    await callback.message.edit_text(
-        "🔍 <b>Поиск пользователя</b>\n\n"
-        "Введите ID пользователя или @username:",
-        parse_mode="HTML"
-    )
+    text = "🔍 <b>Поиск пользователя</b>\n\nВведите ID пользователя или @username:"
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
 @router.message(AdminStates.searching_user)
 async def admin_user_search_result(message: Message, state: FSMContext, admin_user_service: AdminUserService):
-    """
-    Обработка введённого ID или username и отображение результата.
-    """
+    """Обработка введённого ID или username и отображение результата."""
     admin_id = message.from_user.id
     user_input = message.text.strip()
     logger.info(f"[ADMIN {admin_id}] Поиск пользователя: {user_input}")
@@ -168,20 +155,19 @@ async def admin_user_search_result(message: Message, state: FSMContext, admin_us
             user = user_info['user']
             stats = user_info['stats']
 
-        # Формируем ответ
         text = (
             f"👤 <b>Информация о пользователе</b>\n\n"
             f"ID: <code>{user.user_id}</code>\n"
-            f"Username: @{html.escape(user.username) if user.username else 'Нет'}\n"
-            f"Имя: {html.escape(user.first_name or 'Нет')}\n"
-            f"Фамилия: {html.escape(user.last_name or 'Нет')}\n"
+            f"Username: @{escape_html(user.username) if user.username else 'Нет'}\n"
+            f"Имя: {escape_html(user.first_name or 'Нет')}\n"
+            f"Фамилия: {escape_html(user.last_name or 'Нет')}\n"
             f"Дата регистрации: {user.created_at[:10]}\n"
             f"Всего обменов: {stats['total_orders']}\n"
             f"Общий объём: {stats['total_volume']:,.0f} ₽\n"
             f"Статус: {'🚫 Забанен' if user.is_banned else '✅ Активен'}\n"
         )
         if user.is_banned and user.ban_reason:
-            text += f"Причина бана: {html.escape(user.ban_reason)}\n"
+            text += f"Причина бана: {escape_html(user.ban_reason)}\n"
 
         keyboard = InlineKeyboardBuilder()
         if user.is_banned:
@@ -202,12 +188,9 @@ async def admin_user_search_result(message: Message, state: FSMContext, admin_us
 
 @router.callback_query(F.data.startswith("admin_ban_from_list_"))
 async def admin_ban_from_list(callback: CallbackQuery, state: FSMContext, admin_user_service: AdminUserService):
-    """
-    Обработка нажатия на кнопку "Забанить" в списке пользователей.
-    Переводит в состояние ввода причины бана.
-    """
+    """Обработка нажатия на кнопку "Забанить" в списке пользователей."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -224,37 +207,28 @@ async def admin_ban_from_list(callback: CallbackQuery, state: FSMContext, admin_
 
     await state.update_data(ban_user_id=user_id)
     await state.set_state(AdminStates.banning_reason)
-    await callback.message.answer(
-        f"🚫 Введите причину бана для пользователя {user_id}:"
-    )
+    await callback.message.answer(f"🚫 Введите причину бана для пользователя {user_id}:")
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_user_ban")
 async def admin_user_ban_start(callback: CallbackQuery, state: FSMContext):
-    """
-    Начало процесса бана по ID (ручной ввод).
-    """
+    """Начало процесса бана по ID (ручной ввод)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     logger.info(f"[ADMIN {admin_id}] Запрос на бан пользователя (ручной ввод)")
     await state.set_state(AdminStates.banning_user)
-    await callback.message.edit_text(
-        "🚫 <b>Бан пользователя</b>\n\n"
-        "Введите ID пользователя или @username:",
-        parse_mode="HTML"
-    )
+    text = "🚫 <b>Бан пользователя</b>\n\nВведите ID пользователя или @username:"
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
 @router.message(AdminStates.banning_user)
 async def admin_user_ban_reason(message: Message, state: FSMContext, admin_user_service: AdminUserService):
-    """
-    Обработка введённого ID/username для бана. Переход к вводу причины.
-    """
+    """Обработка введённого ID/username для бана. Переход к вводу причины."""
     admin_id = message.from_user.id
     user_input = message.text.strip()
     logger.info(f"[ADMIN {admin_id}] Бан пользователя: {user_input}")
@@ -292,9 +266,7 @@ async def admin_user_ban_reason(message: Message, state: FSMContext, admin_user_
 
 @router.message(AdminStates.banning_reason)
 async def admin_user_ban_finish(message: Message, state: FSMContext, admin_user_service: AdminUserService):
-    """
-    Финализация бана: сохранение причины и выполнение бана.
-    """
+    """Финализация бана: сохранение причины и выполнение бана."""
     admin_id = message.from_user.id
     data = await state.get_data()
     user_id = data.get('ban_user_id')
@@ -304,11 +276,11 @@ async def admin_user_ban_finish(message: Message, state: FSMContext, admin_user_
 
     try:
         await admin_user_service.ban_user(user_id, reason, admin_id)
-        safe_reason = html.escape(reason)
-        await message.answer(
-            f"✅ Пользователь {user_id} забанен.\nПричина: {safe_reason}",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 К пользователям", callback_data="admin_users_menu").as_markup()
-        )
+        safe_reason = escape_html(reason)
+        text = f"✅ Пользователь {user_id} забанен.\nПричина: {safe_reason}"
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 К пользователям", callback_data="admin_users_menu")
+        await message.answer(text, reply_markup=keyboard.as_markup())
         logger.info(f"[ADMIN {admin_id}] Пользователь {user_id} успешно забанен")
     except Exception as e:
         logger.error(f"[ADMIN {admin_id}] Ошибка при бане пользователя {user_id}: {e}", exc_info=True)
@@ -319,11 +291,9 @@ async def admin_user_ban_finish(message: Message, state: FSMContext, admin_user_
 
 @router.callback_query(F.data.startswith("admin_unban_from_list_"))
 async def admin_unban_from_list(callback: CallbackQuery, admin_user_service: AdminUserService):
-    """
-    Разбан пользователя по кнопке из списка.
-    """
+    """Разбан пользователя по кнопке из списка."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -351,29 +321,22 @@ async def admin_unban_from_list(callback: CallbackQuery, admin_user_service: Adm
 
 @router.callback_query(F.data == "admin_user_unban")
 async def admin_user_unban_start(callback: CallbackQuery, state: FSMContext):
-    """
-    Начало процесса разбана по ID (ручной ввод).
-    """
+    """Начало процесса разбана по ID (ручной ввод)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     logger.info(f"[ADMIN {admin_id}] Запрос на разбан пользователя (ручной ввод)")
     await state.set_state(AdminStates.unbanning_user)
-    await callback.message.edit_text(
-        "✅ <b>Разбан пользователя</b>\n\n"
-        "Введите ID пользователя:",
-        parse_mode="HTML"
-    )
+    text = "✅ <b>Разбан пользователя</b>\n\nВведите ID пользователя:"
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
 @router.message(AdminStates.unbanning_user)
 async def admin_user_unban_execute(message: Message, state: FSMContext, admin_user_service: AdminUserService):
-    """
-    Выполнение разбана по введённому ID.
-    """
+    """Выполнение разбана по введённому ID."""
     admin_id = message.from_user.id
     try:
         user_id = int(message.text.strip())
@@ -386,10 +349,10 @@ async def admin_user_unban_execute(message: Message, state: FSMContext, admin_us
             await message.answer("❌ Пользователь не забанен.")
         else:
             await admin_user_service.unban_user(user_id)
-            await message.answer(
-                f"✅ Пользователь {user_id} разбанен.",
-                reply_markup=InlineKeyboardBuilder().button(text="🔙 К пользователям", callback_data="admin_users_menu").as_markup()
-            )
+            text = f"✅ Пользователь {user_id} разбанен."
+            keyboard = InlineKeyboardBuilder()
+            keyboard.button(text="🔙 К пользователям", callback_data="admin_users_menu")
+            await message.answer(text, reply_markup=keyboard.as_markup())
             logger.info(f"[ADMIN {admin_id}] Пользователь {user_id} разбанен")
     except ValueError:
         logger.warning(f"[ADMIN {admin_id}] Некорректный ввод ID: {message.text}")
@@ -403,11 +366,9 @@ async def admin_user_unban_execute(message: Message, state: FSMContext, admin_us
 
 @router.callback_query(F.data.startswith("admin_user_banned_list"))
 async def admin_user_banned_list(callback: CallbackQuery, admin_user_service: AdminUserService):
-    """
-    Показывает список забаненных пользователей с пагинацией.
-    """
+    """Показывает список забаненных пользователей с пагинацией."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -427,10 +388,10 @@ async def admin_user_banned_list(callback: CallbackQuery, admin_user_service: Ad
         return
 
     if not users:
-        await callback.message.edit_text(
-            "📭 Нет забаненных пользователей.",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="admin_users_menu").as_markup()
-        )
+        text = "📭 Нет забаненных пользователей."
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 Назад", callback_data="admin_users_menu")
+        await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
         await callback.answer()
         return
 
@@ -438,8 +399,8 @@ async def admin_user_banned_list(callback: CallbackQuery, admin_user_service: Ad
     keyboard = InlineKeyboardBuilder()
 
     for user in users:
-        safe_name = html.escape(user.username or user.first_name or str(user.user_id))
-        safe_reason = html.escape(user.ban_reason) if user.ban_reason else 'Без причины'
+        safe_name = escape_html(user.username or user.first_name or str(user.user_id))
+        safe_reason = escape_html(user.ban_reason) if user.ban_reason else 'Без причины'
         text += f"• {safe_name} (ID: {user.user_id}) – {safe_reason}\n"
 
     # Пагинация
@@ -451,5 +412,5 @@ async def admin_user_banned_list(callback: CallbackQuery, admin_user_service: Ad
     keyboard.button(text="🔙 Назад", callback_data="admin_users_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()

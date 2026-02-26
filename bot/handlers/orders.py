@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from bot.services.db import db
+from bot.utils.helpers import escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()

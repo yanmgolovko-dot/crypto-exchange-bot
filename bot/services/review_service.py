@@ -13,13 +13,24 @@ logger = logging.getLogger(__name__)
 class ReviewService:
     """Бизнес-логика для отзывов."""
 
-    async def create_review(self, user_id: int, order_id: int, rating: int, comment: Optional[str] = None) -> int:
+    async def create_review(self, user_id: int, order_id: int, rating: int, 
+                            comment: Optional[str] = None,
+                            username: Optional[str] = None,
+                            fake_exchanges: Optional[int] = None) -> int:
         """
         Создаёт новый отзыв. Отзыв создаётся со статусом is_approved = False (ожидает модерации).
+        Для фейк-отзывов можно передать username и fake_exchanges, user_id и order_id могут быть None.
         """
-        logger.info(f"Создание отзыва для заказа #{order_id} от пользователя {user_id}")
+        logger.info(f"Создание отзыва для заказа #{order_id} от пользователя {user_id}, фейк-сделок: {fake_exchanges}")
         async with db.uow() as uow:
-            review_id = await uow.reviews.create_review(user_id, order_id, rating, comment)
+            review_id = await uow.reviews.create_review(
+                user_id=user_id,
+                order_id=order_id,
+                rating=rating,
+                comment=comment,
+                username=username,
+                fake_exchanges=fake_exchanges
+            )
             await uow.commit()
             logger.info(f"Отзыв #{review_id} создан, ожидает модерации")
             return review_id

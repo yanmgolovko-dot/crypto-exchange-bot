@@ -44,6 +44,7 @@ from bot.services.admin_order_service import AdminOrderService
 from bot.services.admin_user_service import AdminUserService
 from bot.services.admin_wallet_service import AdminWalletService
 from bot.services.admin_finance_service import AdminFinanceService
+from bot.services.partner_service import partner_service
 from bot.handlers import router as user_router
 from bot.admin import router as admin_router
 
@@ -133,18 +134,42 @@ dp.include_router(user_router)
 
 # ==================== ФОНОВЫЙ ВОРКЕР НАПОМИНАНИЙ ====================
 async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentService):
+    """
+    Фоновая задача для отправки напоминаний о неоплаченных заявках.
+    Проверяет настройку reminders_enabled – если отключено, ничего не делает.
+    """
     logger.info("Запуск воркера напоминаний")
     while True:
         try:
+            # Проверяем, включены ли напоминания
+            reminders_enabled = await db.settings.get_reminders_enabled()
+            if not reminders_enabled:
+                await asyncio.sleep(60)
+                continue
+
             orders = await db.orders.get_pending_orders_for_reminder(minutes=5, max_reminders=3)
             for order in orders:
-                logger.info(f"Отправка напоминания по заявке #{order.id} пользователю {order.user_id}")
-                success = await payment_service.send_payment_reminder(bot, order, order.user_id)
-                if success:
-                    await db.orders.increment_reminder_count(order.id)
-                await asyncio.sleep(1)
+                # Пытаемся отправить до 3 раз с экспоненциальной задержкой
+                for attempt in range(3):
+                    try:
+                        logger.info(f"Отправка напоминания по заявке #{order.id} пользователю {order.user_id} (попытка {attempt+1})")
+                        success = await payment_service.send_payment_reminder(bot, order, order.user_id)
+                        if success:
+                            await db.orders.increment_reminder_count(order.id)
+                            logger.info(f"Напоминание по заявке #{order.id} успешно отправлено")
+                            break
+                        else:
+                            logger.warning(f"Не удалось отправить напоминание по заявке #{order.id} (попытка {attempt+1})")
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке напоминания по заявке #{order.id} (попытка {attempt+1}): {e}")
+                        if attempt == 2:
+                            logger.error(f"Все попытки для заявки #{order.id} исчерпаны")
+                        else:
+                            wait = 2 ** attempt  # экспоненциальная задержка: 1, 2, 4 секунды
+                            await asyncio.sleep(wait)
+                await asyncio.sleep(1)  # пауза между разными заявками
         except Exception as e:
-            logger.exception(f"Ошибка в воркере напоминаний: {e}")
+            logger.exception(f"Критическая ошибка в воркере напоминаний: {e}")
         await asyncio.sleep(60)
 
 
@@ -181,39 +206,9 @@ async def on_startup():
         db_log_level = "INFO"
     print(f"🟢 Уровень логирования из БД (через сервис): {db_log_level}")
 
-    # Дополнительная диагностика: прямой SQL-запрос
-    try:
-        import sqlite3
-        temp_conn = sqlite3.connect(config.DB_PATH)
-        temp_cursor = temp_conn.cursor()
-        temp_cursor.execute("SELECT value FROM system_settings WHERE key = 'log_level';")
-        row = temp_cursor.fetchone()
-        if row:
-            print(f"🔍 Прямой SQL-запрос: log_level = {row[0]}")
-        else:
-            print("🔍 Прямой SQL-запрос: запись не найдена")
-        temp_conn.close()
-    except Exception as e:
-        print(f"🔍 Ошибка при прямом SQL-запросе: {e}")
-
     # Применяем уровень к корневому логгеру
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-
-    # Выводим информацию об обработчиках
-    print("Обработчики корневого логгера после настройки:")
-    for i, h in enumerate(root_logger.handlers):
-        print(f"  {i}: {h.__class__.__name__}, уровень={h.level}, форматтер={h.formatter._fmt if h.formatter else 'None'}")
-
-    # Тестовые сообщения
-    logger.debug("🔍 ТЕСТ: сообщение DEBUG через логгер")
-    logger.info("🔍 ТЕСТ: сообщение INFO через логгер")
-    logger.warning("🔍 ТЕСТ: сообщение WARNING через логгер")
-
-    # Сброс буферов
-    for h in root_logger.handlers:
-        if hasattr(h, 'flush'):
-            h.flush()
 
     # Устанавливаем уровни для шумных библиотек
     logging.getLogger('aiogram').setLevel(logging.WARNING)
@@ -230,7 +225,12 @@ async def on_startup():
     logger.info(f"[TIME] Время загрузки: {elapsed:.2f} секунд")
     print(f"🟢 Время загрузки: {elapsed:.2f} сек")
 
+    # Игнорируем отправку самому себе (боту)
+    bot_id = (await bot.get_me()).id
     for admin_id in config.ADMIN_IDS:
+        if admin_id == bot_id:
+            logger.warning(f"ID бота {bot_id} присутствует в списке администраторов. Пропускаем уведомление.")
+            continue
         try:
             await bot.send_message(
                 admin_id,

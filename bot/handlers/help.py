@@ -11,6 +11,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.keyboards import help_keyboard
+from bot.utils.helpers import safe_edit_message, escape_html
 
 # Настройка логгера для текущего модуля
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ async def help_callback(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="back_to_help")
 
     # Отправляем/редактируем сообщение с текстом и кнопкой возврата
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     logger.debug(f"[{user_id}] Сообщение с темой {topic} отправлено")
     await callback.answer()
 
@@ -133,6 +134,6 @@ async def back_to_help(callback: CallbackQuery):
         "Выберите интересующий вас вопрос:"
     )
     # Заменяем текущее сообщение на меню помощи
-    await callback.message.edit_text(text, reply_markup=help_keyboard(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=help_keyboard(), parse_mode="HTML")
     logger.debug(f"[{user_id}] Главное меню помощи восстановлено")
     await callback.answer()

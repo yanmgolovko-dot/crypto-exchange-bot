@@ -36,7 +36,8 @@ class Order:
     tx_hash: Optional[str] = None
     reminder_count: int = 0
     last_reminder_at: Optional[str] = None
-    coupon_id: Optional[int] = None   # новое поле
+    coupon_id: Optional[int] = None
+    public_order_number: Optional[int] = None
 
 
 class OrderRepository(BaseRepository):
@@ -53,22 +54,47 @@ class OrderRepository(BaseRepository):
                            promo_code: str = None, discount_percent: float = 0,
                            coupon_id: Optional[int] = None) -> int:
         """
-        Создаёт новую заявку со статусом 'pending'.
-        :return: ID созданной заявки
+        Создаёт новую заявку со статусом 'pending' и присваивает публичный номер из счётчика.
         """
         logger.debug(f"Создание заявки для user_id={user_id}, crypto={crypto_type}, сумма={amount_rub}")
         async with self.lock:
+            # Получаем следующий публичный номер
+            cursor = await self.conn.execute(
+                "SELECT value FROM system_settings WHERE key = 'next_order_number'"
+            )
+            row = await cursor.fetchone()
+            if row:
+                public_number = int(row[0])
+                logger.info(f"Текущий счётчик next_order_number = {public_number}")
+                # Увеличиваем счётчик
+                await self.conn.execute(
+                    "UPDATE system_settings SET value = ? WHERE key = 'next_order_number'",
+                    (str(public_number + 1),)
+                )
+                logger.info(f"Счётчик увеличен до {public_number + 1}")
+            else:
+                # Если счётчика нет, начинаем с 1 и создаём запись
+                public_number = 1
+                await self.conn.execute(
+                    "INSERT INTO system_settings (key, value) VALUES ('next_order_number', ?)",
+                    (str(public_number + 1),)
+                )
+                logger.info(f"Счётчик отсутствовал, создан со значением {public_number + 1}")
+
+            # Вставляем заявку с полученным номером
             cursor = await self.conn.execute("""
                 INSERT INTO exchange_orders 
                 (user_id, username, crypto_type, amount_rub, amount_crypto, rate, 
                  fee_percent, crypto_address, status, promo_code, discount_percent, 
-                 reminder_count, coupon_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?)
+                 reminder_count, coupon_id, public_order_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, ?)
+                RETURNING id
             """, (user_id, username, crypto_type, amount_rub, amount_crypto, 
-                  rate, fee_percent, crypto_address, promo_code, discount_percent, coupon_id))
+                  rate, fee_percent, crypto_address, promo_code, discount_percent, coupon_id, public_number))
+            row = await cursor.fetchone()
+            order_id = row[0]
             await self.conn.commit()
-            order_id = cursor.lastrowid
-            logger.info(f"Заявка #{order_id} создана в БД")
+            logger.info(f"Заявка #{order_id} создана в БД, публичный номер: {public_number}")
             return order_id
 
     @db_retry()
@@ -85,6 +111,20 @@ class OrderRepository(BaseRepository):
                 logger.debug(f"Заявка #{order_id} найдена")
                 return Order(**dict(row))
             logger.debug(f"Заявка #{order_id} не найдена")
+            return None
+
+    @db_retry()
+    async def get_order_by_public_number(self, number: int) -> Optional[Order]:
+        """Находит заявку по публичному номеру."""
+        logger.debug(f"Запрос заявки по публичному номеру #{number}")
+        async with self.lock:
+            self.conn.row_factory = aiosqlite.Row
+            cursor = await self.conn.execute(
+                "SELECT * FROM exchange_orders WHERE public_order_number = ?", (number,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return Order(**dict(row))
             return None
 
     @db_retry()
@@ -213,7 +253,6 @@ class OrderRepository(BaseRepository):
             return True
 
     # ==================== МЕТОДЫ ДЛЯ НАПОМИНАНИЙ ====================
-
     @db_retry()
     async def get_pending_orders_for_reminder(self, minutes: int = 5, max_reminders: int = 3) -> List[Order]:
         """

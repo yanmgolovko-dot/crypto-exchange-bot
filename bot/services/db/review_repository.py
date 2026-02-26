@@ -11,26 +11,35 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Review:
     id: int
-    user_id: int
-    order_id: int
+    user_id: Optional[int]
+    order_id: Optional[int]
     rating: int
     comment: Optional[str]
     created_at: str
     is_approved: bool
     admin_reply: Optional[str]
     replied_at: Optional[str]
+    username: Optional[str]
+    fake_exchanges: Optional[int] = None  # новое поле
 
 
 class ReviewRepository(BaseRepository):
 
     @db_retry()
-    async def create_review(self, user_id: int, order_id: int, rating: int, comment: Optional[str] = None) -> int:
-        logger.info(f"Создание отзыва для заказа #{order_id} от пользователя {user_id}, оценка {rating}")
+    async def create_review(self, user_id: Optional[int], order_id: Optional[int], rating: int,
+                            comment: Optional[str] = None,
+                            username: Optional[str] = None,
+                            fake_exchanges: Optional[int] = None) -> int:
+        """
+        Создаёт отзыв. user_id и order_id могут быть None (для фейк-отзывов).
+        fake_exchanges используется для указания количества сделок фейк-пользователя.
+        """
+        logger.info(f"Создание отзыва от пользователя {user_id}, оценка {rating}, фейк-сделок: {fake_exchanges}")
         async with self.lock:
             cursor = await self.conn.execute("""
-                INSERT INTO reviews (user_id, order_id, rating, comment)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, order_id, rating, comment))
+                INSERT INTO reviews (user_id, order_id, rating, comment, username, fake_exchanges)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, order_id, rating, comment, username, fake_exchanges))
             await self.conn.commit()
             review_id = cursor.lastrowid
             logger.info(f"Отзыв #{review_id} создан")

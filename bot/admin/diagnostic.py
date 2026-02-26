@@ -5,6 +5,7 @@ from aiogram.types import CallbackQuery
 
 from bot.services.diagnostic import run_diagnostics
 from bot.admin.main import is_admin
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -28,10 +29,11 @@ async def admin_diagnostic(callback: CallbackQuery):
 
     try:
         result = await run_diagnostics(callback.from_user.id, callback.bot)
-        await status_msg.edit_text(result.to_text(), parse_mode="HTML")
+        await safe_edit_message(status_msg, result.to_text(), parse_mode="HTML")
         logger.info(f"[ADMIN {admin_id}] Диагностика завершена, ошибок: {len(result.errors)}")
         if result.errors:
             logger.warning(f"[ADMIN {admin_id}] Диагностика выявила ошибки: {result.errors}")
     except Exception as e:
         logger.exception(f"[ADMIN {admin_id}] Ошибка при выполнении диагностики: {e}")
-        await status_msg.edit_text(f"❌ Произошла ошибка при выполнении диагностики: {e}")
+        error_text = f"❌ Произошла ошибка при выполнении диагностики: {escape_html(str(e))}"
+        await safe_edit_message(status_msg, error_text, parse_mode="HTML")

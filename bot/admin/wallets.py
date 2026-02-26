@@ -12,6 +12,7 @@ from bot.services.db import db
 from bot.services.admin_wallet_service import AdminWalletService
 from bot.admin.main import is_admin
 from bot.admin.states import AdminStates
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -21,7 +22,7 @@ router = Router()
 async def admin_wallets_menu(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Главное меню управления кошельками."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         logger.warning(f"[ADMIN {admin_id}] Попытка доступа к меню кошельков без прав")
         return
@@ -67,14 +68,14 @@ async def admin_wallets_menu(callback: CallbackQuery, admin_wallet_service: Admi
         f"Выберите действие:"
     )
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin_wallet_add")
 async def admin_wallet_add_start(callback: CallbackQuery, state: FSMContext):
     """Начало добавления кошелька (выбор типа)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -87,12 +88,8 @@ async def admin_wallet_add_start(callback: CallbackQuery, state: FSMContext):
     keyboard.button(text="🔙 Отмена", callback_data="admin_wallets_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(
-        "💎 <b>Добавление кошелька</b>\n\n"
-        "Выберите тип криптовалюты:",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
+    text = "💎 <b>Добавление кошелька</b>\n\nВыберите тип криптовалюты:"
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -107,12 +104,12 @@ async def admin_wallet_address(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.adding_wallet_address)
 
     example = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' if crypto_type == 'BTC' else 'LVgDpZd7dJ6t7mLqFf7vQZpC7J7z4y5Y5'
-    await callback.message.edit_text(
+    text = (
         f"💎 <b>Добавление {crypto_type} кошелька</b>\n\n"
         f"Введите публичный адрес кошелька:\n"
-        f"(например: {example})",
-        parse_mode="HTML"
+        f"(например: {example})"
     )
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -134,13 +131,13 @@ async def admin_wallet_key(message: Message, state: FSMContext):
     await state.update_data(wallet_address=address)
     await state.set_state(AdminStates.adding_wallet_key)
 
-    await message.answer(
+    text = (
         f"🔑 <b>Введите приватный ключ (WIF)</b>\n\n"
         f"Формат WIF (начинается с {'K' if crypto_type == 'BTC' else 'T'}...):\n\n"
         f"⚠️ <b>Внимание!</b> Ключ будет зашифрован и храниться в базе данных.\n"
-        f"Убедитесь, что у вас есть резервная копия!",
-        parse_mode="HTML"
+        f"Убедитесь, что у вас есть резервная копия!"
     )
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(AdminStates.adding_wallet_key)
@@ -159,10 +156,11 @@ async def admin_wallet_label(message: Message, state: FSMContext):
     await state.update_data(wallet_key=private_key)
     await state.set_state(AdminStates.adding_wallet_label)
 
-    await message.answer(
+    text = (
         "🏷 <b>Введите метку для кошелька</b>\n\n"
         "(например: 'Основной BTC', 'Резервный LTC' или оставьте пустым):"
     )
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(AdminStates.adding_wallet_label)
@@ -198,15 +196,16 @@ async def admin_wallet_finish(message: Message, state: FSMContext, admin_wallet_
     except Exception as e:
         logger.error(f"[ADMIN {admin_id}] Ошибка при обновлении баланса кошелька #{wallet_id}: {e}", exc_info=True)
 
-    safe_address = html.escape(data['wallet_address'])
-    await message.answer(
+    safe_address = escape_html(data['wallet_address'])
+    text = (
         f"✅ <b>Кошелек добавлен!</b>\n\n"
         f"Тип: {data['wallet_type']}\n"
         f"Адрес: <code>{safe_address}</code>\n"
-        f"Метка: {label or 'Нет'}",
-        reply_markup=InlineKeyboardBuilder().button(text="🔙 К кошелькам", callback_data="admin_wallets_menu").as_markup(),
-        parse_mode="HTML"
+        f"Метка: {escape_html(label) if label else 'Нет'}"
     )
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 К кошелькам", callback_data="admin_wallets_menu")
+    await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await state.clear()
 
 
@@ -214,7 +213,7 @@ async def admin_wallet_finish(message: Message, state: FSMContext, admin_wallet_
 async def admin_wallet_list(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Список всех кошельков с кнопками управления."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -238,24 +237,23 @@ async def admin_wallet_list(callback: CallbackQuery, admin_wallet_service: Admin
     for wallet in wallets:
         status = "✅" if wallet.is_active else "❌"
         default = " (по умолчанию)" if wallet.is_default else ""
-        safe_address = html.escape(wallet.address[:20])
+        safe_address = escape_html(wallet.address[:20])
         text += (
             f"{status} <b>{wallet.crypto_type}</b>{default}\n"
             f"   Адрес: <code>{safe_address}...</code>\n"
             f"   Баланс: {wallet.balance:.8f} {wallet.crypto_type}\n"
-            f"   Метка: {wallet.label or 'Нет'}\n\n"
+            f"   Метка: {escape_html(wallet.label) if wallet.label else 'Нет'}\n\n"
         )
         if wallet.is_active:
             keyboard.button(text=f"❌ Деактивировать {wallet.crypto_type}", callback_data=f"admin_wallet_deactivate_{wallet.id}")
         else:
             keyboard.button(text=f"✅ Активировать {wallet.crypto_type}", callback_data=f"admin_wallet_activate_{wallet.id}")
-        # Кнопка полного удаления
         keyboard.button(text=f"🗑 Удалить навсегда {wallet.crypto_type}", callback_data=f"admin_wallet_hard_delete_confirm_{wallet.id}")
 
     keyboard.button(text="🔙 Назад", callback_data="admin_wallets_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -263,7 +261,7 @@ async def admin_wallet_list(callback: CallbackQuery, admin_wallet_service: Admin
 async def admin_wallet_deactivate_confirm(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Деактивация кошелька (без подтверждения)."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -303,7 +301,7 @@ async def admin_wallet_activate(callback: CallbackQuery, admin_wallet_service: A
 async def admin_wallet_hard_delete_confirm(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Подтверждение полного удаления кошелька."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -329,8 +327,8 @@ async def admin_wallet_hard_delete_confirm(callback: CallbackQuery, admin_wallet
     text = (
         f"⚠️ <b>Подтверждение полного удаления кошелька</b>\n\n"
         f"Тип: {wallet.crypto_type}\n"
-        f"Адрес: <code>{html.escape(wallet.address)}</code>\n"
-        f"Метка: {wallet.label or 'Нет'}\n\n"
+        f"Адрес: <code>{escape_html(wallet.address)}</code>\n"
+        f"Метка: {escape_html(wallet.label) if wallet.label else 'Нет'}\n\n"
         f"Это действие <b>безвозвратно удалит</b> кошелёк из базы данных.\n"
         f"Все связанные транзакции останутся, но кошелёк перестанет существовать.\n\n"
         f"Вы уверены?"
@@ -341,7 +339,7 @@ async def admin_wallet_hard_delete_confirm(callback: CallbackQuery, admin_wallet
     keyboard.button(text="❌ Нет", callback_data="admin_wallet_list")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -349,7 +347,7 @@ async def admin_wallet_hard_delete_confirm(callback: CallbackQuery, admin_wallet
 async def admin_wallet_hard_delete_execute(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Исполнение полного удаления кошелька."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -386,7 +384,7 @@ async def admin_wallet_hard_delete_execute(callback: CallbackQuery, admin_wallet
 async def admin_wallets_delete_all_confirm(callback: CallbackQuery):
     """Подтверждение деактивации всех кошельков."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -405,7 +403,7 @@ async def admin_wallets_delete_all_confirm(callback: CallbackQuery):
     keyboard.button(text="❌ Нет", callback_data="admin_wallets_menu")
     keyboard.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -413,7 +411,7 @@ async def admin_wallets_delete_all_confirm(callback: CallbackQuery):
 async def admin_wallets_delete_all_execute(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Исполнение деактивации всех кошельков."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -445,7 +443,7 @@ async def admin_wallets_delete_all_execute(callback: CallbackQuery, admin_wallet
 async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """Обновление балансов всех кошельков."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -472,7 +470,7 @@ async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: Ad
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
-    new_text = (
+    text = (
         f"💎 <b>Управление крипто-кошельками</b>\n\n"
         f"<b>Bitcoin (BTC):</b>\n"
         f"   Кошельков: {len(btc_wallets)}\n"
@@ -483,19 +481,15 @@ async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: Ad
         f"Выберите действие:"
     )
 
-    try:
-        await callback.message.edit_text(new_text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"[ADMIN {admin_id}] Ошибка при редактировании сообщения: {e}")
-            await callback.message.answer(new_text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
 
 @router.callback_query(F.data == "admin_wallet_tx_history")
 async def admin_wallet_tx_history(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
     """История крипто-транзакций."""
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -523,8 +517,8 @@ async def admin_wallet_tx_history(callback: CallbackQuery, admin_wallet_service:
             'failed': '❌'
         }.get(tx.status, '❓')
 
-        safe_to_address = html.escape(tx.to_address[:20])
-        safe_tx_hash = html.escape(tx.tx_hash[:16]) if tx.tx_hash else 'N/A'
+        safe_to_address = escape_html(tx.to_address[:20])
+        safe_tx_hash = escape_html(tx.tx_hash[:16]) if tx.tx_hash else 'N/A'
 
         text += (
             f"{status_emoji} <b>#{tx.id}</b> | Заявка #{tx.order_id}\n"
@@ -537,5 +531,5 @@ async def admin_wallet_tx_history(callback: CallbackQuery, admin_wallet_service:
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="admin_wallets_menu")
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()

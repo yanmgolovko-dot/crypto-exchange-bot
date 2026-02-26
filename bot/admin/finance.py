@@ -1,3 +1,4 @@
+# bot/admin/finance.py
 """Обработчики админ-панели для финансов"""
 
 import logging
@@ -12,6 +13,7 @@ from bot.services.crypto_api import crypto_api
 from bot.services.admin_finance_service import AdminFinanceService
 from bot.admin.main import is_admin
 from bot.admin.states import AdminStates
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -19,7 +21,7 @@ router = Router()
 
 @router.callback_query(F.data == "admin_finance_menu")
 async def admin_finance_menu(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -32,17 +34,14 @@ async def admin_finance_menu(callback: CallbackQuery):
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(2, 2, 1, 1)
 
-    await callback.message.edit_text(
-        "💰 <b>Финансовое меню</b>\n\nВыберите действие:",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
+    text = "💰 <b>Финансовое меню</b>\n\nВыберите действие:"
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_finance_stats")
 async def admin_finance_stats(callback: CallbackQuery, admin_finance_service: AdminFinanceService):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -73,40 +72,40 @@ async def admin_finance_stats(callback: CallbackQuery, admin_finance_service: Ad
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="admin_finance_menu")
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_finance_charts")
 async def admin_finance_charts(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="admin_finance_menu")
 
-    await callback.message.edit_text(
+    text = (
         "📈 Функция построения графиков находится в разработке.\n\n"
-        "Пока вы можете посмотреть статистику в разделе «📊 Статистика».",
-        reply_markup=keyboard.as_markup()
+        "Пока вы можете посмотреть статистику в разделе «📊 Статистика»."
     )
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_finance_history")
 async def admin_finance_history(callback: CallbackQuery, admin_finance_service: AdminFinanceService):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     records = await admin_finance_service.get_recent_records(limit=20)
 
     if not records:
-        await callback.message.edit_text(
-            "📭 История операций пуста.",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="admin_finance_menu").as_markup()
-        )
+        text = "📭 История операций пуста."
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 Назад", callback_data="admin_finance_menu")
+        await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
         await callback.answer()
         return
 
@@ -122,32 +121,28 @@ async def admin_finance_history(callback: CallbackQuery, admin_finance_service: 
         amount_str = f"{sign}{rec.amount:,.0f} ₽"
 
         text += (
-            f"{emoji} <b>{rec.category}</b>\n"
+            f"{emoji} <b>{escape_html(rec.category)}</b>\n"
             f"   {amount_str} | {rec.created_at[:16]}\n"
-            f"   {rec.description or '—'}\n"
+            f"   {escape_html(rec.description or '—')}\n"
             f"   {rec.currency}\n\n"
         )
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="admin_finance_menu")
 
-    await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_finance_add_expense")
 async def admin_add_expense_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     await state.set_state(AdminStates.adding_expense)
-
-    await callback.message.edit_text(
-        "➕ <b>Добавление расхода</b>\n\n"
-        "Введите сумму расхода в рублях:",
-        parse_mode="HTML"
-    )
+    text = "➕ <b>Добавление расхода</b>\n\nВведите сумму расхода в рублях:"
+    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -157,7 +152,6 @@ async def admin_add_expense_amount(message: Message, state: FSMContext):
         amount = float(message.text.replace(" ", "").replace(",", "."))
         await state.update_data(expense_amount=amount)
         await state.set_state(AdminStates.adding_expense_desc)
-
         await message.answer("Введите описание расхода:")
     except ValueError:
         await message.answer("❌ Пожалуйста, введите корректное число:")
@@ -171,18 +165,17 @@ async def admin_add_expense_desc(message: Message, state: FSMContext, admin_fina
 
     await admin_finance_service.add_expense(amount, description, message.from_user.id)
 
-    await message.answer(
-        f"✅ Расход добавлен:\n\n"
-        f"Сумма: {amount:,.0f} ₽\n"
-        f"Описание: {description}",
-        reply_markup=InlineKeyboardBuilder().button(text="🔙 К финансам", callback_data="admin_finance_menu").as_markup()
-    )
+    text = f"✅ Расход добавлен:\n\nСумма: {amount:,.0f} ₽\nОписание: {escape_html(description)}"
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 К финансам", callback_data="admin_finance_menu")
+
+    await message.answer(text, reply_markup=keyboard.as_markup())
     await state.clear()
 
 
 @router.callback_query(F.data == "admin_finance_refresh_rates")
 async def admin_finance_refresh_rates(callback: CallbackQuery, admin_finance_service: AdminFinanceService):
-    if not is_admin(callback.from_user.id):
+    if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -200,7 +193,5 @@ async def admin_finance_refresh_rates(callback: CallbackQuery, admin_finance_ser
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="admin_finance_menu")
 
-    try:
-        await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    except Exception:
-        await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer()

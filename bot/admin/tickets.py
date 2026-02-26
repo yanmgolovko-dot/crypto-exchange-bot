@@ -12,6 +12,7 @@ from bot.services.db import db
 from bot.services.ticket_service import ticket_service
 from bot.admin.main import is_admin, notify_admins
 from bot.config.settings import config
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -55,14 +56,14 @@ def admin_ticket_control_keyboard(ticket_id: int) -> InlineKeyboardBuilder:
 @router.callback_query(F.data == "admin_tickets_menu")
 async def admin_tickets_menu(callback: CallbackQuery):
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     tickets = await ticket_service.get_open_tickets()
     text = f"📋 <b>Открытые тикеты</b> (всего: {len(tickets)})\n\n"
     kb = admin_tickets_keyboard(tickets)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -71,14 +72,14 @@ async def admin_tickets_menu(callback: CallbackQuery):
 async def admin_tickets_page(callback: CallbackQuery):
     page = int(callback.data.split("_")[3])
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     tickets = await ticket_service.get_open_tickets()
     text = f"📋 <b>Открытые тикеты</b> (всего: {len(tickets)})\n\n"
     kb = admin_tickets_keyboard(tickets, page)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -86,7 +87,7 @@ async def admin_tickets_page(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("admin_ticket_view_"))
 async def admin_ticket_view(callback: CallbackQuery):
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -99,16 +100,16 @@ async def admin_ticket_view(callback: CallbackQuery):
     messages = await ticket_service.get_messages(ticket_id)
     text = f"📋 <b>Тикет #{ticket_id}</b> ({'🟢 открыт' if ticket.status == 'open' else '🔴 закрыт'})\n\n"
     if ticket.subject:
-        text += f"Тема: {ticket.subject}\n\n"
+        text += f"Тема: {escape_html(ticket.subject)}\n\n"
 
     for msg in messages:
         sender = "👤 Пользователь" if not msg.is_admin else "🛠 Вы (админ)"
         time_str = msg.created_at[:16] if msg.created_at else ""
         file_info = " 📎 (файл)" if msg.file_path else ""
-        text += f"{sender} [{time_str}]:{file_info}\n{msg.message}\n\n"
+        text += f"{sender} [{time_str}]:{file_info}\n{escape_html(msg.message)}\n\n"
 
     kb = admin_ticket_control_keyboard(ticket_id) if ticket.status == 'open' else None
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -116,7 +117,7 @@ async def admin_ticket_view(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("admin_ticket_reply_"))
 async def admin_ticket_reply_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -153,7 +154,7 @@ async def admin_ticket_reply_message(message: Message, state: FSMContext, bot: B
         user_kb.button(text="💬 Ответить", callback_data=f"ticket_reply_{ticket_id}")
         await bot.send_message(
             ticket.user_id,
-            f"💬 <b>Новый ответ от администратора по тикету #{ticket_id}</b>\n\n{message.text}",
+            f"💬 <b>Новый ответ от администратора по тикету #{ticket_id}</b>\n\n{escape_html(message.text)}",
             reply_markup=user_kb.as_markup(),
             parse_mode="HTML"
         )
@@ -169,7 +170,7 @@ async def admin_ticket_reply_message(message: Message, state: FSMContext, bot: B
 @router.callback_query(F.data.startswith("admin_ticket_request_file_"))
 async def admin_ticket_request_file_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -209,7 +210,7 @@ async def admin_ticket_request_file_message(message: Message, state: FSMContext,
         user_kb.button(text="📎 Отправить файл", callback_data=f"ticket_reply_{ticket_id}")
         await bot.send_message(
             ticket.user_id,
-            f"📎 <b>Запрос файла от администратора по тикету #{ticket_id}</b>\n\n{request_text}\n\nНажмите кнопку ниже, чтобы ответить и прикрепить файл.",
+            f"📎 <b>Запрос файла от администратора по тикету #{ticket_id}</b>\n\n{escape_html(request_text)}\n\nНажмите кнопку ниже, чтобы ответить и прикрепить файл.",
             reply_markup=user_kb.as_markup(),
             parse_mode="HTML"
         )
@@ -225,7 +226,7 @@ async def admin_ticket_request_file_message(message: Message, state: FSMContext,
 @router.callback_query(F.data.startswith("admin_ticket_close_"))
 async def admin_ticket_close(callback: CallbackQuery):
     admin_id = callback.from_user.id
-    if not is_admin(admin_id):
+    if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 

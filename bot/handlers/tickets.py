@@ -15,6 +15,7 @@ from bot.services.ticket_service import ticket_service
 from bot.keyboards import main_menu_keyboard
 from bot.admin.main import notify_admins, is_admin
 from bot.config.settings import config
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -129,7 +130,7 @@ async def ticket_faq(callback: CallbackQuery):
     )
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="support_entry")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=kb.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -137,7 +138,8 @@ async def ticket_faq(callback: CallbackQuery):
 @router.callback_query(F.data == "ticket_new")
 async def ticket_new_from_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(TicketStates.waiting_for_subject)
-    await callback.message.edit_text(
+    await safe_edit_message(
+        callback.message,
         "💬 Опишите кратко ваш вопрос (тему) или отправьте /skip, чтобы пропустить:"
     )
     await callback.answer()
@@ -181,9 +183,9 @@ async def ticket_first_message(message: Message, state: FSMContext, bot: Bot):
     # Уведомляем всех админов
     admin_text = (
         f"🆕 <b>Новое обращение #{ticket_id}</b>\n"
-        f"Пользователь: @{message.from_user.username or 'N/A'} (ID: {user_id})\n"
-        f"Тема: {subject or 'Без темы'}\n\n"
-        f"{first_msg}"
+        f"Пользователь: @{escape_html(message.from_user.username or 'N/A')} (ID: {user_id})\n"
+        f"Тема: {escape_html(subject) if subject else 'Без темы'}\n\n"
+        f"{escape_html(first_msg)}"
     )
     kb = InlineKeyboardBuilder()
     kb.button(text="📋 Ответить", callback_data=f"admin_ticket_view_{ticket_id}")
@@ -196,7 +198,8 @@ async def ticket_list(callback: CallbackQuery):
     user_id = callback.from_user.id
     tickets = await ticket_service.get_user_tickets(user_id)
     if not tickets:
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             "📋 У вас пока нет обращений.\n\nХотите создать новое?",
             reply_markup=InlineKeyboardBuilder().button(text="📝 Создать тикет", callback_data="ticket_new").as_markup()
         )
@@ -204,7 +207,7 @@ async def ticket_list(callback: CallbackQuery):
         return
     text = "📋 <b>Ваши обращения в поддержку:</b>\n\n"
     kb = tickets_list_keyboard(tickets)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -235,16 +238,17 @@ async def show_ticket(message: Message, ticket_id: int, state: FSMContext, edit:
     messages = await ticket_service.get_messages(ticket_id)
     text = f"📋 <b>Тикет #{ticket_id}</b> ({'🟢 открыт' if ticket.status == 'open' else '🔴 закрыт'})\n\n"
     if ticket.subject:
-        text += f"Тема: {ticket.subject}\n\n"
+        text += f"Тема: {escape_html(ticket.subject)}\n\n"
 
     for msg in messages:
         sender = "👤 Вы" if not msg.is_admin else "🛠 Админ"
         time_str = msg.created_at[:16] if msg.created_at else ""
         file_info = " 📎 (файл)" if msg.file_path else ""
-        text += f"{sender} [{time_str}]:{file_info}\n{msg.message}\n\n"
+        text += f"{sender} [{time_str}]:{file_info}\n{escape_html(msg.message)}\n\n"
 
     if edit:
-        await message.edit_text(
+        await safe_edit_message(
+            message,
             text,
             reply_markup=ticket_user_keyboard(ticket_id, in_dialog) if ticket.status == 'open' else None,
             parse_mode="HTML"
@@ -275,7 +279,8 @@ async def ticket_reply_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(TicketStates.in_dialog)
     await state.update_data(active_ticket_id=ticket_id)
 
-    await callback.message.edit_text(
+    await safe_edit_message(
+        callback.message,
         f"💬 Вы вошли в диалог по тикету #{ticket_id}. Все ваши сообщения будут отправляться сюда.\n"
         "Для выхода используйте /cancel или кнопку ниже.",
         reply_markup=InlineKeyboardBuilder().button(
@@ -290,7 +295,8 @@ async def ticket_reply_start(callback: CallbackQuery, state: FSMContext):
 async def ticket_exit_dialog(callback: CallbackQuery, state: FSMContext):
     ticket_id = int(callback.data.split("_")[3])
     await state.clear()
-    await callback.message.edit_text(
+    await safe_edit_message(
+        callback.message,
         f"✅ Вы вышли из диалога по тикету #{ticket_id}. Чтобы продолжить общение, откройте тикет.",
         reply_markup=InlineKeyboardBuilder().button(
             text="📋 К тикету", callback_data=f"ticket_view_{ticket_id}"
@@ -353,7 +359,7 @@ async def handle_dialog_message(message: Message, state: FSMContext, bot: Bot):
     # Уведомляем админов
     admin_text = (
         f"💬 <b>Новый ответ пользователя в тикете #{ticket_id}</b>\n\n"
-        f"{content}"
+        f"{escape_html(content)}"
     )
     if file_path:
         admin_text += "\n\n(Файл прикреплён)"
@@ -403,7 +409,7 @@ async def ticket_page(callback: CallbackQuery):
     tickets = await ticket_service.get_user_tickets(user_id)
     text = "📋 <b>Ваши обращения в поддержку:</b>\n\n"
     kb = tickets_list_keyboard(tickets, page)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await safe_edit_message(callback.message, text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 

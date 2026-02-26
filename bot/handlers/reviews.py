@@ -11,12 +11,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.services.db import db
 from bot.services.review_service import review_service
 from bot.keyboards import main_menu_keyboard
+from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-# Состояния FSM для создания отзыва
 class ReviewStates(StatesGroup):
     waiting_for_rating = State()      # ожидание оценки (1-5)
     waiting_for_comment = State()      # ожидание комментария (опционально)
@@ -25,7 +25,6 @@ class ReviewStates(StatesGroup):
 # ========== ПУБЛИЧНЫЙ РАЗДЕЛ ОТЗЫВОВ ==========
 @router.message(F.text == "📝 Отзывы")
 async def reviews_public(message: Message):
-    """Показывает последние одобренные отзывы с никами и количеством обменов."""
     user_id = message.from_user.id
     logger.info(f"[{user_id}] Запрос публичных отзывов")
 
@@ -35,28 +34,31 @@ async def reviews_public(message: Message):
     else:
         text = "📝 <b>Отзывы наших клиентов</b>\n\n"
         for rev in reviews:
-            # Получаем пользователя
-            user = await db.get_user(rev.user_id)
-            # Получаем статистику пользователя (количество обменов)
-            stats = await db.get_user_stats(rev.user_id)
-            exchanges = stats.get('total_orders', 0)
-
-            # Формируем отображаемое имя (по умолчанию показываем)
-            if user and user.username:
-                display_name = f"@{user.username}"
-            elif user and user.first_name:
-                display_name = user.first_name
+            # Определяем отображаемое имя
+            if rev.username:
+                display_name = rev.username
             else:
-                display_name = f"ID {rev.user_id}"
+                user = await db.get_user(rev.user_id)
+                if user and user.username:
+                    display_name = f"@{user.username}"
+                elif user and user.first_name:
+                    display_name = user.first_name
+                else:
+                    display_name = f"ID {rev.user_id}"
 
-            # Звёзды рейтинга
+            # Определяем количество сделок
+            if rev.fake_exchanges is not None:
+                exchanges = rev.fake_exchanges
+            else:
+                stats = await db.get_user_stats(rev.user_id) if rev.user_id else {'total_orders': 0}
+                exchanges = stats.get('total_orders', 0)
+
             rating_stars = "⭐" * rev.rating + "☆" * (5 - rev.rating)
 
-            # Блок отзыва
-            text += f"<b>{display_name}</b>  {rating_stars}  (<i>{exchanges} обменов</i>)\n"
-            text += f"{rev.comment or '<i>Без комментария</i>'}\n"
+            text += f"<b>{escape_html(display_name)}</b>  {rating_stars}  (<i>{exchanges} обменов</i>)\n"
+            text += f"{escape_html(rev.comment) if rev.comment else '<i>Без комментария</i>'}\n"
             if rev.admin_reply:
-                text += f"<i>Ответ администратора: {rev.admin_reply}</i>\n"
+                text += f"<i>Ответ администратора: {escape_html(rev.admin_reply)}</i>\n"
             text += f"—— {rev.created_at[:10]}\n\n"
 
     kb = InlineKeyboardBuilder()
@@ -74,16 +76,15 @@ async def reviews_back_main(callback: CallbackQuery):
 # ========== ПРЕДЛОЖЕНИЕ ОСТАВИТЬ ОТЗЫВ ПОСЛЕ ЗАЯВКИ ==========
 @router.callback_query(F.data.startswith("review_rate_"))
 async def review_rate_callback(callback: CallbackQuery, state: FSMContext):
-    """Пользователь выбрал оценку."""
     parts = callback.data.split("_")
     order_id = int(parts[2])
     rating = int(parts[3])
 
-    # Сохраняем в состоянии
     await state.update_data(review_order_id=order_id, review_rating=rating)
     await state.set_state(ReviewStates.waiting_for_comment)
 
-    await callback.message.edit_text(
+    await safe_edit_message(
+        callback.message,
         f"Вы поставили {rating} ⭐. Напишите, пожалуйста, комментарий (или отправьте /skip, чтобы пропустить):"
     )
     await callback.answer()
@@ -91,7 +92,6 @@ async def review_rate_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ReviewStates.waiting_for_comment)
 async def review_comment_received(message: Message, state: FSMContext):
-    """Пользователь ввёл комментарий (или пропустил)."""
     data = await state.get_data()
     order_id = data.get('review_order_id')
     rating = data.get('review_rating')
@@ -99,7 +99,6 @@ async def review_comment_received(message: Message, state: FSMContext):
 
     user_id = message.from_user.id
 
-    # Создаём отзыв
     try:
         review_id = await review_service.create_review(user_id, order_id, rating, comment)
         await message.answer(

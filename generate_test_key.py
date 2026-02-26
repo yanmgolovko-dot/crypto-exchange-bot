@@ -1,10 +1,10 @@
-from bitcoinlib.keys import Key
-
-# Генерация нового ключа в тестовой сети Bitcoin
-key = Key(network='testnet')
-
-print("=== Bitcoin Testnet Key ===")
-print(f"Приватный ключ (WIF): {key.wif()}")
-print(f"Публичный адрес: {key.address()}")
-print(f"Тип адреса: {key.address_type}")
-print("\nЭти данные можно использовать для добавления кошелька в админку.")
+import sqlite3
+conn = sqlite3.connect('data/exchange.db')
+cursor = conn.cursor()
+cursor.execute("SELECT user_id, is_active FROM partners WHERE user_id = 6422018512")
+row = cursor.fetchone()
+if row:
+    print(f"Найден: user_id={row[0]}, is_active={row[1]}")
+else:
+    print("Запись не найдена")
+conn.close()

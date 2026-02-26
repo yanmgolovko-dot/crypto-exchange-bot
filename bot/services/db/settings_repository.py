@@ -163,3 +163,55 @@ class SettingsRepository(BaseRepository):
         except Exception as e:
             logger.error(f"Ошибка сериализации JSON для ключа {key}: {e}")
             return False
+
+    # ===== НОВЫЙ МЕТОД ДЛЯ РАБОТЫ С НОМЕРОМ ЗАЯВКИ =====
+    @db_retry()
+    async def get_next_order_number(self) -> int:
+        """
+        Возвращает следующий публичный номер заявки и увеличивает счётчик.
+        Этот метод атомарен и потокобезопасен благодаря блокировке.
+        """
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT value FROM system_settings WHERE key = 'next_order_number'"
+            )
+            row = await cursor.fetchone()
+            if row:
+                current = int(row[0])
+                await self.conn.execute(
+                    "UPDATE system_settings SET value = ? WHERE key = 'next_order_number'",
+                    (str(current + 1),)
+                )
+            else:
+                current = 1
+                await self.conn.execute(
+                    "INSERT INTO system_settings (key, value) VALUES ('next_order_number', ?)",
+                    (str(current + 1),)
+                )
+            await self.conn.commit()
+            return current
+
+    @db_retry()
+    async def set_next_order_number(self, value: int, updated_by: int = None) -> bool:
+        """
+        Устанавливает следующий номер заявки (используется администратором).
+        """
+        return await self.set_setting('next_order_number', str(value), updated_by)
+
+    # ===== НОВЫЙ МЕТОД ДЛЯ УПРАВЛЕНИЯ НАПОМИНАНИЯМИ =====
+    @db_retry()
+    async def get_reminders_enabled(self) -> bool:
+        """
+        Возвращает, включены ли напоминания о чеке (reminders_enabled).
+        По умолчанию True.
+        """
+        value = await self.get_setting('reminders_enabled', '1')
+        return value == '1'
+
+    @db_retry()
+    async def set_reminders_enabled(self, enabled: bool, updated_by: int = None) -> bool:
+        """
+        Устанавливает состояние напоминаний.
+        """
+        val = '1' if enabled else '0'
+        return await self.set_setting('reminders_enabled', val, updated_by)

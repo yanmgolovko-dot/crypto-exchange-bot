@@ -31,6 +31,7 @@ class User:
     bonus_balance: float
     language: str
     notifications_enabled: bool
+    fake_total_exchanges: int = 0  # новое поле
 
 
 class UserRepository(BaseRepository):
@@ -170,11 +171,20 @@ class UserRepository(BaseRepository):
             )
             total_saved = (await cursor.fetchone())[0] or 0
 
+            # Получаем фейковое количество сделок
+            cursor = await self.conn.execute(
+                "SELECT fake_total_exchanges FROM users WHERE user_id = ?",
+                (user_id,)
+            )
+            row = await cursor.fetchone()
+            fake_total = row[0] if row else 0
+
             logger.debug(f"Статистика пользователя {user_id}: заявок={total_orders}, объём={total_volume}, сэкономлено={total_saved}")
             return {
                 'total_orders': total_orders,
                 'total_volume': total_volume,
-                'total_saved': total_saved
+                'total_saved': total_saved,
+                'fake_total_exchanges': fake_total
             }
 
     @db_retry()
@@ -193,10 +203,7 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def add_referral_earning(self, referrer_id: int, referred_id: int,
                                     order_id: int, amount: float, percent: float) -> int:
-        """
-        Добавляет запись о реферальном заработке.
-        Возвращает ID созданной записи.
-        """
+        """Добавляет запись о реферальном заработке."""
         logger.info(f"Добавление реферального заработка: реферер {referrer_id}, реферал {referred_id}, заказ {order_id}, сумма {amount}, процент {percent}")
         async with self.lock:
             cursor = await self.conn.execute("""
@@ -210,9 +217,7 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_referral_earnings(self, user_id: int) -> List[Dict]:
-        """
-        Возвращает список реферальных начислений для пользователя с информацией о заказах.
-        """
+        """Возвращает список реферальных начислений для пользователя с информацией о заказах."""
         logger.debug(f"Запрос реферальных начислений для пользователя {user_id}")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -228,8 +233,33 @@ class UserRepository(BaseRepository):
             logger.debug(f"Найдено {len(earnings)} записей")
             return earnings
 
-    # ==================== СЕССИИ ПОЛЬЗОВАТЕЛЕЙ ====================
+    # ==================== НОВЫЕ МЕТОДЫ ДЛЯ ФЕЙКОВОГО КОЛИЧЕСТВА СДЕЛОК ====================
+    @db_retry()
+    async def set_fake_total_exchanges(self, user_id: int, fake_count: int) -> bool:
+        """Устанавливает фейковое количество сделок для пользователя."""
+        async with self.lock:
+            await self.conn.execute(
+                "UPDATE users SET fake_total_exchanges = ? WHERE user_id = ?",
+                (fake_count, user_id)
+            )
+            await self.conn.commit()
+            return True
 
+    @db_retry()
+    async def get_fake_total_exchanges(self, user_id: int) -> int:
+        """Возвращает фейковое количество сделок (или реальное, если фейк не установлен)."""
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT fake_total_exchanges FROM users WHERE user_id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            if row and row[0] is not None:
+                return row[0]
+            # Если не установлено, возвращаем реальное количество
+            stats = await self.get_user_stats(user_id)
+            return stats['total_orders']
+
+    # ==================== СЕССИИ ПОЛЬЗОВАТЕЛЕЙ ====================
     @db_retry()
     async def create_session(self, user_id: int) -> int:
         """Создаёт новую сессию пользователя."""
