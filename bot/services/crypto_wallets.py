@@ -90,7 +90,7 @@ class BitcoinServiceBlockCypher:
         """
         Отправить BTC через BlockCypher:
         1. Получить UTXO для адреса отправителя.
-        2. Создать и подписать транзакцию через bitcoinlib.
+        2. Создать и подписать транзакцию через bitcoinlib с фиксированной комиссией 0.0001 BTC.
         3. Отправить через BlockCypher API (метод push tx).
         """
         if not BITCOINLIB_AVAILABLE:
@@ -114,8 +114,8 @@ class BitcoinServiceBlockCypher:
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
 
-        # Создаём транзакцию через bitcoinlib
-        t = Transaction(network='bitcoin')
+        # Создаём транзакцию через bitcoinlib с фиксированной комиссией 10000 сатоши (0.0001 BTC)
+        t = Transaction(network='bitcoin', fee=10000)
         for utxo in utxos:
             t.add_input(
                 prev_txid=utxo["txid"],
@@ -131,6 +131,11 @@ class BitcoinServiceBlockCypher:
         if not t.verify():
             raise Exception("Transaction verification failed")
         logger.info("Транзакция подписана и верифицирована")
+
+        # Отладочный вывод количества выходов (для контроля сдачи)
+        logger.info(f"Количество выходов транзакции: {len(t.outputs)}")
+        if len(t.outputs) == 1:
+            logger.warning("Выход только один – сдача не создана (UTXO израсходован полностью)")
 
         tx_hex = t.raw_hex()
         logger.info(f"raw_hex длина: {len(tx_hex)}")
@@ -219,7 +224,8 @@ class LitecoinServiceBlockCypher:
         if not utxos:
             raise Exception("Нет UTXO")
 
-        t = Transaction(network='litecoin')
+        # Создаём транзакцию через bitcoinlib с фиксированной комиссией 100000 сатоши (0.001 LTC)
+        t = Transaction(network='litecoin', fee=100000)
         for utxo in utxos:
             t.add_input(
                 prev_txid=utxo["txid"],
@@ -234,6 +240,10 @@ class LitecoinServiceBlockCypher:
 
         if not t.verify():
             raise Exception("Transaction verification failed")
+
+        logger.info(f"Количество выходов транзакции: {len(t.outputs)}")
+        if len(t.outputs) == 1:
+            logger.warning("Выход только один – сдача не создана (UTXO израсходован полностью)")
 
         tx_hex = t.raw_hex()
         session = await self._get_session()
