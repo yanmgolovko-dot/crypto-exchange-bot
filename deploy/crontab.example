@@ -1,0 +1,9 @@
+# /etc/cron.d/crypto-bot
+# Бэкап БД и чеков — каждый день в 03:30
+30 3 * * * root /opt/crypto-bot/deploy/backup.sh >> /var/log/crypto-bot-backup.log 2>&1
+
+# Очистка старых чеков — каждое воскресенье в 04:00
+0 4 * * 0 root /opt/crypto-bot/deploy/cleanup_receipts.sh >> /var/log/crypto-bot-cleanup.log 2>&1
+
+# Логи (опционально): ротация раз в неделю
+0 5 * * 0 root find /var/log -name "crypto-bot-*.log" -mtime +30 -delete
