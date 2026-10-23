@@ -21,7 +21,6 @@ router = Router()
 async def is_admin(user_id: int) -> bool:
     if user_id in config.ADMIN_IDS:
         return True
-
     try:
         return await db.admins.is_admin(user_id)
     except AttributeError:
@@ -48,9 +47,7 @@ async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int 
         if exclude_id and admin_id == exclude_id:
             continue
         try:
-            await bot.send_message(
-                admin_id, text, reply_markup=reply_markup, parse_mode="HTML"
-            )
+            await bot.send_message(admin_id, text, reply_markup=reply_markup, parse_mode="HTML")
             logger.info(f"Уведомление отправлено админу {admin_id}")
         except Exception as e:
             logger.error(f"Не удалось отправить сообщение админу {admin_id}: {e}")
@@ -78,6 +75,7 @@ def admin_main_keyboard():
     keyboard.button(text="⚙️ Курсы обмена", callback_data="admin_rates_menu")
     keyboard.button(text="👥 Пользователи", callback_data="admin_users_menu")
     keyboard.button(text="🔗 Реф. ссылки", callback_data="admin_ref_links_menu")
+    keyboard.button(text="🎰 Мини-игра", callback_data="admin_spin_menu")
     keyboard.button(text="💎 Кошельки", callback_data="admin_wallets_menu")
     keyboard.button(text="🎯 Маркетинг", callback_data="admin_marketing_menu")
     keyboard.button(text="🪄 Фейк-менеджер", callback_data="admin_fake_menu")
@@ -86,8 +84,7 @@ def admin_main_keyboard():
     keyboard.button(text="🔍 Диагностика", callback_data="admin_diagnostic")
     keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
     keyboard.button(text="👑 Управление админами", callback_data="admin_manage_admins")
-    # 13 кнопок: 6 рядов по 2 + 1 одиночная
-    keyboard.adjust(2, 2, 2, 2, 2, 2, 1)
+    keyboard.adjust(2, 2, 2, 2, 2, 2, 2)
     return keyboard.as_markup()
 
 
@@ -182,11 +179,7 @@ async def admin_back_main(callback: CallbackQuery, state: FSMContext):
 
     text = await _build_admin_main_text()
     try:
-        await callback.message.edit_text(
-            text, reply_markup=admin_main_keyboard(), parse_mode="HTML"
-        )
+        await callback.message.edit_text(text, reply_markup=admin_main_keyboard(), parse_mode="HTML")
     except Exception:
-        await callback.message.answer(
-            text, reply_markup=admin_main_keyboard(), parse_mode="HTML"
-        )
+        await callback.message.answer(text, reply_markup=admin_main_keyboard(), parse_mode="HTML")
     await callback.answer()

@@ -20,7 +20,7 @@ def init_db_sync():
     c = conn.cursor()
     logger.debug("Подключение к БД для инициализации установлено")
 
-    # ===== СУЩЕСТВУЮЩИЕ ТАБЛИЦЫ (с IF NOT EXISTS) =====
+    # ===== СУЩЕСТВУЮЩИЕ ТАБЛИЦЫ =====
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -40,11 +40,11 @@ def init_db_sync():
             bonus_balance REAL DEFAULT 0,
             language TEXT DEFAULT 'ru',
             notifications_enabled BOOLEAN DEFAULT 1,
-            fake_total_exchanges INTEGER DEFAULT 0
+            fake_total_exchanges INTEGER DEFAULT 0,
+            available_spins INTEGER DEFAULT 0
         )
     """)
-    logger.debug("Таблица users проверена/создана")
-
+    
     c.execute("""
         CREATE TABLE IF NOT EXISTS exchange_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,7 +78,6 @@ def init_db_sync():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
-    logger.debug("Таблица exchange_orders проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS bank_details (
@@ -95,7 +94,6 @@ def init_db_sync():
             added_by INTEGER
         )
     """)
-    logger.debug("Таблица bank_details проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS promo_codes (
@@ -112,7 +110,6 @@ def init_db_sync():
             description TEXT
         )
     """)
-    logger.debug("Таблица promo_codes проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS promo_usage (
@@ -126,7 +123,6 @@ def init_db_sync():
             UNIQUE(promo_id, user_id)
         )
     """)
-    logger.debug("Таблица promo_usage проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS financial_records (
@@ -142,7 +138,6 @@ def init_db_sync():
             FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
         )
     """)
-    logger.debug("Таблица financial_records проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS system_settings (
@@ -154,7 +149,6 @@ def init_db_sync():
     """)
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('payment_mode', 'auto')")
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('reminders_enabled', '1')")
-    logger.debug("Таблица system_settings проверена/создана, добавлены payment_mode и reminders_enabled по умолчанию")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_sessions (
@@ -168,7 +162,6 @@ def init_db_sync():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
-    logger.debug("Таблица user_sessions проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS referral_earnings (
@@ -186,7 +179,6 @@ def init_db_sync():
             FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
         )
     """)
-    logger.debug("Таблица referral_earnings проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS exchange_wallets (
@@ -205,7 +197,6 @@ def init_db_sync():
             total_received REAL DEFAULT 0
         )
     """)
-    logger.debug("Таблица exchange_wallets проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS crypto_transactions (
@@ -228,7 +219,6 @@ def init_db_sync():
             FOREIGN KEY (wallet_id) REFERENCES exchange_wallets(id)
         )
     """)
-    logger.debug("Таблица crypto_transactions проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS coupons (
@@ -251,7 +241,6 @@ def init_db_sync():
             coupon_type TEXT DEFAULT 'generic'
         )
     """)
-    logger.debug("Таблица coupons проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS coupon_usage (
@@ -265,7 +254,6 @@ def init_db_sync():
             UNIQUE(coupon_id, user_id, order_id)
         )
     """)
-    logger.debug("Таблица coupon_usage проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS activity_awards (
@@ -278,7 +266,6 @@ def init_db_sync():
             UNIQUE(user_id, award_type)
         )
     """)
-    logger.debug("Таблица activity_awards проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS tickets (
@@ -292,7 +279,6 @@ def init_db_sync():
             closed_at TIMESTAMP
         )
     """)
-    logger.debug("Таблица tickets проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS ticket_messages (
@@ -305,7 +291,6 @@ def init_db_sync():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    logger.debug("Таблица ticket_messages проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
@@ -324,7 +309,6 @@ def init_db_sync():
             FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
         )
     """)
-    logger.debug("Таблица reviews проверена/создана (с nullable полями)")
 
     try:
         cursor = conn.execute("PRAGMA table_info(reviews)")
@@ -359,7 +343,6 @@ def init_db_sync():
     except Exception as e:
         logger.error(f"Ошибка при миграции таблицы reviews: {e}")
 
-    # ===== ТАБЛИЦЫ ДЛЯ ПАРТНЁРСКОЙ ПРОГРАММЫ =====
     c.execute("""
         CREATE TABLE IF NOT EXISTS partners (
             user_id INTEGER PRIMARY KEY REFERENCES users(user_id),
@@ -372,7 +355,6 @@ def init_db_sync():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    logger.debug("Таблица partners проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS referral_tree (
@@ -386,7 +368,6 @@ def init_db_sync():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_referral_tree_referred ON referral_tree(referred_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_referral_tree_referrer ON referral_tree(referrer_id)")
-    logger.debug("Таблица referral_tree проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS withdraw_requests (
@@ -404,7 +385,6 @@ def init_db_sync():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_withdraw_requests_user ON withdraw_requests(user_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_withdraw_requests_status ON withdraw_requests(status)")
-    logger.debug("Таблица withdraw_requests проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS partner_settings (
@@ -422,7 +402,6 @@ def init_db_sync():
     """)
     default_rewards = '[{"level":1,"type":"percent","value":10},{"level":2,"type":"percent","value":5},{"level":3,"type":"percent","value":2},{"level":4,"type":"percent","value":1},{"level":5,"type":"percent","value":0.5},{"level":6,"type":"percent","value":0.3},{"level":7,"type":"percent","value":0.2},{"level":8,"type":"percent","value":0.1},{"level":9,"type":"percent","value":0.05},{"level":10,"type":"percent","value":0.02}]'
     c.execute("INSERT OR IGNORE INTO partner_settings (id, level_rewards) VALUES (1, ?)", (default_rewards,))
-    logger.debug("Таблица partner_settings проверена/создана")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS admins (
@@ -431,7 +410,6 @@ def init_db_sync():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    logger.debug("Таблица admins проверена/создана")
 
     # ===== ИНДЕКСЫ =====
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON exchange_orders(user_id)")
@@ -455,61 +433,43 @@ def init_db_sync():
     c.execute("CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(user_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_reviews_order ON reviews(order_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_partners_user ON partners(user_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_withdraw_requests_user ON withdraw_requests(user_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_withdraw_requests_status ON withdraw_requests(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_admins_user ON admins(user_id)")
-    logger.debug("Индексы проверены/созданы")
 
     # ===== ДОБАВЛЕНИЕ НЕДОСТАЮЩИХ КОЛОНОК =====
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN reminder_count INTEGER DEFAULT 0")
-        logger.info("Колонка reminder_count добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка reminder_count уже существует")
-
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN last_reminder_at TIMESTAMP")
-        logger.info("Колонка last_reminder_at добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка last_reminder_at уже существует")
-
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN coupon_id INTEGER REFERENCES coupons(id)")
-        logger.info("Колонка coupon_id добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка coupon_id уже существует")
-
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN public_order_number INTEGER")
-        logger.info("Колонка public_order_number добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка public_order_number уже существует")
-
-    # --- Новые колонки для P2P (order_type, network, user_payment_details) ---
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN order_type TEXT DEFAULT 'shop'")
-        logger.info("Колонка order_type добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка order_type уже существует")
-
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN network TEXT")
-        logger.info("Колонка network добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка network уже существует")
-
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN user_payment_details TEXT")
-        logger.info("Колонка user_payment_details добавлена в exchange_orders")
-    except sqlite3.OperationalError:
-        logger.debug("Колонка user_payment_details уже существует")
-
-    # --- Фейковые сделки для отзывов ---
+    except sqlite3.OperationalError: pass
     try:
         c.execute("ALTER TABLE reviews ADD COLUMN fake_exchanges INTEGER")
-        logger.info("Колонка fake_exchanges добавлена в reviews")
+    except sqlite3.OperationalError: pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN available_spins INTEGER DEFAULT 0")
+        logger.info("Колонка available_spins добавлена в users")
     except sqlite3.OperationalError:
-        logger.debug("Колонка fake_exchanges уже существует")
+        logger.debug("Колонка available_spins уже существует")
+
+    # ===== НАСТРОЙКИ МИНИ-ИГРЫ =====
+    c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('spin_threshold', '5')")
+    default_prizes = '[{"min":1,"max":30,"type":"nothing","text":"Пусто"},{"min":31,"max":45,"type":"coupon","value":5,"text":"Купон 5%"},{"min":46,"max":55,"type":"coupon","value":10,"text":"Купон 10%"},{"min":56,"max":62,"type":"balance","value":50,"text":"50 ₽ на баланс"},{"min":63,"max":63,"type":"balance","value":100,"text":"100 ₽ на баланс"},{"min":64,"max":64,"type":"balance","value":500,"text":"500 ₽ на баланс"}]'
+    c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('spin_prizes', ?)", (default_prizes,))
 
     # ===== ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКА ЗАЯВОК =====
     try:

@@ -62,6 +62,11 @@ class Database:
         self.update_session_activity = self.users.update_session_activity
         self.get_online_users = self.users.get_online_users
         self.update_last_activity = self.users.update_last_activity
+        self.increment_total_exchanges = self.users.increment_total_exchanges
+        self.add_spin = self.users.add_spin
+        self.use_spin = self.users.use_spin
+        self.get_available_spins = self.users.get_available_spins
+        self.add_bonus_balance = self.users.add_bonus_balance
 
         # Заявки
         self.create_order = self.orders.create_order

@@ -35,22 +35,14 @@ class User:
     language: str
     notifications_enabled: bool
     fake_total_exchanges: int = 0
+    available_spins: int = 0
 
 
 def _generate_ref_code(first_name: Optional[str] = None) -> str:
-    """
-    Генерирует читаемый реф. код:
-      - если есть имя → берём до 5 латинских букв из имени + случайный суффикс;
-      - иначе → USR + случайный суффикс.
-    Примеры: ILYA7X, MIKE23, USR4KF, ANNAB2.
-    """
     prefix = ""
     if first_name:
-        cleaned = "".join(
-            c for c in first_name.upper() if c.isascii() and c.isalpha()
-        )
+        cleaned = "".join(c for c in first_name.upper() if c.isascii() and c.isalpha())
         prefix = cleaned[:5]
-
     if len(prefix) < 2:
         prefix = "USR"
 
@@ -66,10 +58,6 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def add_or_update_user(self, user_id: int, username: str = None,
                                   first_name: str = None, last_name: str = None) -> bool:
-        """
-        Добавляет нового пользователя (с автогенерацией красивого реф. кода)
-        или обновляет данные существующего (НЕ трогая реф. код).
-        """
         logger.info(f"[{user_id}] Добавление/обновление пользователя")
         async with self.lock:
             cursor = await self.conn.execute(
@@ -78,48 +66,36 @@ class UserRepository(BaseRepository):
             row = await cursor.fetchone()
 
             if row:
-                # Пользователь существует — обновляем только личные данные
                 await self.conn.execute("""
-                    UPDATE users SET 
-                        username = ?, 
-                        first_name = ?, 
-                        last_name = ?,
-                        last_activity = CURRENT_TIMESTAMP
+                    UPDATE users SET username = ?, first_name = ?, last_name = ?, last_activity = CURRENT_TIMESTAMP
                     WHERE user_id = ?
                 """, (username, first_name, last_name, user_id))
             else:
-                # Новый пользователь — генерируем уникальный реф. код
                 referral_code = None
                 for _ in range(10):
                     candidate = _generate_ref_code(first_name)
-                    check = await self.conn.execute(
-                        "SELECT 1 FROM users WHERE referral_code = ?", (candidate,)
-                    )
+                    check = await self.conn.execute("SELECT 1 FROM users WHERE referral_code = ?", (candidate,))
                     if not await check.fetchone():
                         referral_code = candidate
                         break
-
                 if not referral_code:
-                    # Fallback: криптостойкий рандом, шанс коллизии ~0
                     referral_code = secrets.token_hex(4).upper()
 
                 await self.conn.execute("""
-                    INSERT INTO users 
-                        (user_id, username, first_name, last_name, referral_code, last_activity)
+                    INSERT INTO users (user_id, username, first_name, last_name, referral_code, last_activity)
                     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """, (user_id, username, first_name, last_name, referral_code))
-                logger.info(f"[{user_id}] Новый пользователь, реф. код: {referral_code}")
-
+            
             await self.conn.commit()
             return True
 
     @db_retry()
     async def set_referrer(self, user_id: int, referrer_id: int) -> bool:
-        logger.info(f"[{user_id}] Установка реферера {referrer_id}")
         async with self.lock:
-            await self.conn.execute("""
-                UPDATE users SET referred_by = ? WHERE user_id = ? AND referred_by IS NULL
-            """, (referrer_id, user_id))
+            await self.conn.execute(
+                "UPDATE users SET referred_by = ? WHERE user_id = ? AND referred_by IS NULL",
+                (referrer_id, user_id)
+            )
             await self.conn.commit()
             return True
 
@@ -127,9 +103,7 @@ class UserRepository(BaseRepository):
     async def get_user(self, user_id: int) -> Optional[User]:
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
-            cursor = await self.conn.execute(
-                "SELECT * FROM users WHERE user_id = ?", (user_id,)
-            )
+            cursor = await self.conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             row = await cursor.fetchone()
             if row:
                 return User(**dict(row))
@@ -138,13 +112,10 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def get_user_by_username(self, username: str) -> Optional[User]:
         clean = (username or "").lstrip("@").lower()
-        if not clean:
-            return None
+        if not clean: return None
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
-            cursor = await self.conn.execute(
-                "SELECT * FROM users WHERE LOWER(username) = ?", (clean,)
-            )
+            cursor = await self.conn.execute("SELECT * FROM users WHERE LOWER(username) = ?", (clean,))
             row = await cursor.fetchone()
             if row:
                 return User(**dict(row))
@@ -152,13 +123,10 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_user_by_referral_code(self, code: str) -> Optional[User]:
-        if not code:
-            return None
+        if not code: return None
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
-            cursor = await self.conn.execute(
-                "SELECT * FROM users WHERE referral_code = ?", (code,)
-            )
+            cursor = await self.conn.execute("SELECT * FROM users WHERE referral_code = ?", (code,))
             row = await cursor.fetchone()
             if row:
                 return User(**dict(row))
@@ -166,12 +134,8 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def set_user_referral_code(self, user_id: int, code: str) -> bool:
-        logger.info(f"Установка реф. кода '{code}' для пользователя {user_id}")
         async with self.lock:
-            await self.conn.execute(
-                "UPDATE users SET referral_code = ? WHERE user_id = ?",
-                (code, user_id),
-            )
+            await self.conn.execute("UPDATE users SET referral_code = ? WHERE user_id = ?", (code, user_id))
             await self.conn.commit()
             return True
 
@@ -187,11 +151,7 @@ class UserRepository(BaseRepository):
     async def ban_user(self, user_id: int, reason: str, banned_by: int) -> bool:
         async with self.lock:
             await self.conn.execute("""
-                UPDATE users SET 
-                    is_banned = 1, 
-                    ban_reason = ?, 
-                    ban_date = CURRENT_TIMESTAMP,
-                    banned_by = ?
+                UPDATE users SET is_banned = 1, ban_reason = ?, ban_date = CURRENT_TIMESTAMP, banned_by = ?
                 WHERE user_id = ?
             """, (reason, banned_by, user_id))
             await self.conn.commit()
@@ -201,11 +161,7 @@ class UserRepository(BaseRepository):
     async def unban_user(self, user_id: int) -> bool:
         async with self.lock:
             await self.conn.execute("""
-                UPDATE users SET 
-                    is_banned = 0, 
-                    ban_reason = NULL, 
-                    ban_date = NULL,
-                    banned_by = NULL
+                UPDATE users SET is_banned = 0, ban_reason = NULL, ban_date = NULL, banned_by = NULL
                 WHERE user_id = ?
             """, (user_id,))
             await self.conn.commit()
@@ -221,49 +177,30 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def get_user_stats(self, user_id: int) -> Dict[str, Any]:
         async with self.lock:
-            cursor = await self.conn.execute(
-                "SELECT COUNT(*) FROM exchange_orders WHERE user_id = ?", (user_id,)
-            )
+            cursor = await self.conn.execute("SELECT COUNT(*) FROM exchange_orders WHERE user_id = ?", (user_id,))
             total_orders = (await cursor.fetchone())[0]
 
-            cursor = await self.conn.execute(
-                "SELECT SUM(amount_rub) FROM exchange_orders WHERE user_id = ? AND status = 'completed'",
-                (user_id,)
-            )
+            cursor = await self.conn.execute("SELECT SUM(amount_rub) FROM exchange_orders WHERE user_id = ? AND status = 'completed'", (user_id,))
             total_volume = (await cursor.fetchone())[0] or 0
 
-            cursor = await self.conn.execute(
-                "SELECT SUM(amount_rub * discount_percent / 100) FROM exchange_orders WHERE user_id = ? AND status = 'completed'",
-                (user_id,)
-            )
+            cursor = await self.conn.execute("SELECT SUM(amount_rub * discount_percent / 100) FROM exchange_orders WHERE user_id = ? AND status = 'completed'", (user_id,))
             total_saved = (await cursor.fetchone())[0] or 0
 
-            cursor = await self.conn.execute(
-                "SELECT fake_total_exchanges FROM users WHERE user_id = ?", (user_id,)
-            )
+            cursor = await self.conn.execute("SELECT fake_total_exchanges FROM users WHERE user_id = ?", (user_id,))
             row = await cursor.fetchone()
             fake_total = row[0] if row else 0
 
-            return {
-                'total_orders': total_orders,
-                'total_volume': total_volume,
-                'total_saved': total_saved,
-                'fake_total_exchanges': fake_total,
-            }
+            return {'total_orders': total_orders, 'total_volume': total_volume, 'total_saved': total_saved, 'fake_total_exchanges': fake_total}
 
     @db_retry()
     async def set_user_notifications(self, user_id: int, enabled: bool) -> bool:
         async with self.lock:
-            await self.conn.execute(
-                "UPDATE users SET notifications_enabled = ? WHERE user_id = ?",
-                (enabled, user_id)
-            )
+            await self.conn.execute("UPDATE users SET notifications_enabled = ? WHERE user_id = ?", (enabled, user_id))
             await self.conn.commit()
             return True
 
     @db_retry()
-    async def add_referral_earning(self, referrer_id: int, referred_id: int,
-                                    order_id: int, amount: float, percent: float) -> int:
+    async def add_referral_earning(self, referrer_id: int, referred_id: int, order_id: int, amount: float, percent: float) -> int:
         async with self.lock:
             cursor = await self.conn.execute("""
                 INSERT INTO referral_earnings (referrer_id, referred_id, order_id, amount, percent)
@@ -289,19 +226,14 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def set_fake_total_exchanges(self, user_id: int, fake_count: int) -> bool:
         async with self.lock:
-            await self.conn.execute(
-                "UPDATE users SET fake_total_exchanges = ? WHERE user_id = ?",
-                (fake_count, user_id)
-            )
+            await self.conn.execute("UPDATE users SET fake_total_exchanges = ? WHERE user_id = ?", (fake_count, user_id))
             await self.conn.commit()
             return True
 
     @db_retry()
     async def get_fake_total_exchanges(self, user_id: int) -> int:
         async with self.lock:
-            cursor = await self.conn.execute(
-                "SELECT fake_total_exchanges FROM users WHERE user_id = ?", (user_id,)
-            )
+            cursor = await self.conn.execute("SELECT fake_total_exchanges FROM users WHERE user_id = ?", (user_id,))
             row = await cursor.fetchone()
             if row and row[0] is not None:
                 return row[0]
@@ -321,9 +253,7 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def update_session_activity(self, session_id: int) -> bool:
         async with self.lock:
-            await self.conn.execute("""
-                UPDATE user_sessions SET last_activity = CURRENT_TIMESTAMP WHERE id = ?
-            """, (session_id,))
+            await self.conn.execute("UPDATE user_sessions SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
             await self.conn.commit()
             return True
 
@@ -332,17 +262,55 @@ class UserRepository(BaseRepository):
         async with self.lock:
             cursor = await self.conn.execute("""
                 SELECT COUNT(DISTINCT user_id) FROM user_sessions 
-                WHERE last_activity >= DATETIME('now', '-{} minutes')
-                AND is_active = 1
+                WHERE last_activity >= DATETIME('now', '-{} minutes') AND is_active = 1
             """.format(minutes))
             return (await cursor.fetchone())[0]
 
     @db_retry()
     async def update_last_activity(self, user_id: int) -> bool:
         async with self.lock:
-            await self.conn.execute(
-                "UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE user_id = ?",
-                (user_id,)
-            )
+            await self.conn.execute("UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+            await self.conn.commit()
+            return True
+
+    # ===== НОВЫЕ МЕТОДЫ ДЛЯ МИНИ-ИГРЫ =====
+    @db_retry()
+    async def increment_total_exchanges(self, user_id: int) -> int:
+        async with self.lock:
+            await self.conn.execute("UPDATE users SET total_exchanges = total_exchanges + 1 WHERE user_id = ?", (user_id,))
+            await self.conn.commit()
+            cursor = await self.conn.execute("SELECT total_exchanges FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    @db_retry()
+    async def add_spin(self, user_id: int, count: int = 1) -> bool:
+        async with self.lock:
+            await self.conn.execute("UPDATE users SET available_spins = available_spins + ? WHERE user_id = ?", (count, user_id))
+            await self.conn.commit()
+            return True
+
+    @db_retry()
+    async def use_spin(self, user_id: int) -> bool:
+        async with self.lock:
+            cursor = await self.conn.execute("SELECT available_spins FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+            if not row or row[0] <= 0:
+                return False
+            await self.conn.execute("UPDATE users SET available_spins = available_spins - 1 WHERE user_id = ?", (user_id,))
+            await self.conn.commit()
+            return True
+
+    @db_retry()
+    async def get_available_spins(self, user_id: int) -> int:
+        async with self.lock:
+            cursor = await self.conn.execute("SELECT available_spins FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    @db_retry()
+    async def add_bonus_balance(self, user_id: int, amount: float) -> bool:
+        async with self.lock:
+            await self.conn.execute("UPDATE users SET bonus_balance = bonus_balance + ? WHERE user_id = ?", (amount, user_id))
             await self.conn.commit()
             return True
