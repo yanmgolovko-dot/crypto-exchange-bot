@@ -1,14 +1,6 @@
 # bot/handlers/p2p.py
 """
-P2P-обмен: покупка и продажа USDT, TRX, BTC, LTC по ручным курсам,
-которые настраиваются в админ-панели («⚙️ Курсы обмена», бот/admin/rates.py).
-
-Callback-контракт (совпадает с bot/keyboards/inline.py и bot/handlers/start.py):
-  exch_buy_{COIN}                    — клиент выбрал купить COIN
-  exch_sell_{COIN}                   — клиент выбрал продать COIN
-  exch_input_{action}_{COIN}_rub     — ввод суммы в рублях
-  exch_input_{action}_{COIN}_crypto  — ввод суммы в крипте
-  p2p_cancel                         — отмена создания заявки
+P2P-обмен: покупка и продажа USDT, TRX, BTC, LTC по ручным курсам.
 """
 
 import logging
@@ -36,7 +28,6 @@ from bot.utils.helpers import safe_edit_message, escape_html
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Сети для каждой монеты (пишутся в order.network)
 COIN_NETWORKS = {
     'USDT': 'TRC20',
     'TRX': 'TRC20',
@@ -53,13 +44,13 @@ COIN_NAMES = {
 
 
 class P2PStates(StatesGroup):
-    entering_amount = State()           # ввод суммы (руб или крипта)
-    entering_wallet = State()           # адрес клиента (buy)
-    entering_payment_details = State()  # реквизиты клиента (sell)
+    entering_amount = State()
+    entering_wallet = State()
+    entering_payment_details = State()
+    entering_client_tx_hash = State()  # Клиент вводит хеш после отправки крипты
 
 
 def _fmt_rub(val) -> str:
-    """1234.5 → '1 235'."""
     try:
         return f"{int(round(float(val))):,}".replace(',', ' ')
     except (ValueError, TypeError):
@@ -67,7 +58,6 @@ def _fmt_rub(val) -> str:
 
 
 def _fmt_crypto(val) -> str:
-    """0.12345678 → '0.12345678'."""
     try:
         return f"{float(val):,.8f}".replace(',', ' ')
     except (ValueError, TypeError):
@@ -75,14 +65,11 @@ def _fmt_crypto(val) -> str:
 
 
 def _validate_address(address: str, coin: str) -> bool:
-    """Валидация адреса кошелька."""
     a = (address or '').strip()
     if not a:
         return False
     if coin in ('USDT', 'TRX'):
-        # Tron-адрес: начинается с 'T', длина 34
         return a.startswith('T') and len(a) == 34
-    # BTC / LTC — используем общий валидатор из проекта
     try:
         return validate_crypto_address(a, coin)
     except Exception:
@@ -90,7 +77,6 @@ def _validate_address(address: str, coin: str) -> bool:
 
 
 async def _get_rate(coin: str, action: str) -> float:
-    """Читает курс из system_settings. action: 'buy' | 'sell'."""
     key = f"rate_{coin.lower()}_{action}"
     val = await db.get_setting(key, "0")
     try:
@@ -99,7 +85,6 @@ async def _get_rate(coin: str, action: str) -> float:
         return 0.0
 
 
-# ==================== ШАГ 1: выбор монеты ====================
 @router.callback_query(F.data.regexp(r"^exch_(buy|sell)_(USDT|TRX|BTC|LTC)$"))
 async def p2p_coin_selected(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
@@ -108,8 +93,7 @@ async def p2p_coin_selected(callback: CallbackQuery, state: FSMContext):
     rate = await _get_rate(coin, action)
     if rate <= 0:
         await callback.answer(
-            f"⚠️ Курс для {COIN_NAMES[coin]} ({action}) не настроен. "
-            f"Обратитесь в поддержку.",
+            f"⚠️ Курс для {COIN_NAMES[coin]} ({action}) не настроен. Обратитесь в поддержку.",
             show_alert=True,
         )
         return
@@ -132,7 +116,6 @@ async def p2p_coin_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ==================== ШАГ 2: выбор валюты ввода ====================
 @router.callback_query(F.data.regexp(r"^exch_input_(buy|sell)_(USDT|TRX|BTC|LTC)_(rub|crypto)$"))
 async def p2p_input_type_selected(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
@@ -169,7 +152,6 @@ async def p2p_input_type_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ==================== ШАГ 3: ввод суммы ====================
 @router.message(P2PStates.entering_amount)
 async def p2p_amount_received(message: Message, state: FSMContext):
     if not message.text:
@@ -236,7 +218,6 @@ async def p2p_amount_received(message: Message, state: FSMContext):
     await message.answer(prompt, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 
-# ==================== ШАГ 4a (buy): адрес клиента ====================
 @router.message(P2PStates.entering_wallet)
 async def p2p_wallet_received(
     message: Message,
@@ -274,7 +255,6 @@ async def p2p_wallet_received(
     )
 
 
-# ==================== ШАГ 4b (sell): реквизиты клиента ====================
 @router.message(P2PStates.entering_payment_details)
 async def p2p_details_received(
     message: Message,
@@ -305,7 +285,6 @@ async def p2p_details_received(
     )
 
 
-# ==================== СОЗДАНИЕ ЗАЯВКИ ====================
 async def _create_p2p_order(
     message: Message,
     state: FSMContext,
@@ -314,7 +293,6 @@ async def _create_p2p_order(
     crypto_address: str,
     user_payment_details,
 ):
-    """Создаёт P2P-заявку в БД и уведомляет стороны."""
     data = await state.get_data()
     action = data.get('p2p_action')
     coin = data.get('p2p_coin')
@@ -339,7 +317,7 @@ async def _create_p2p_order(
             amount_rub=amount_rub,
             amount_crypto=amount_crypto,
             rate=rate,
-            fee_percent=0,  # в P2P маржа заложена в курс
+            fee_percent=0,
             crypto_address=crypto_address,
             promo_code=None,
             discount_percent=0,
@@ -356,7 +334,6 @@ async def _create_p2p_order(
 
     order = await db.get_order(order_id)
     public_number = order.public_order_number if order and order.public_order_number else order_id
-
     safe_username = escape_html(username) if username else 'N/A'
 
     if action == 'buy':
@@ -410,8 +387,7 @@ async def _create_p2p_order(
             f"Вы продаёте: <b>{_fmt_crypto(amount_crypto)} {coin}</b>\n"
             f"Вы получите: <b>{_fmt_rub(amount_rub)} ₽</b> на реквизиты:\n"
             f"<code>{escape_html(user_payment_details)}</code>\n\n"
-            f"⚠️ Администратор пришлёт вам адрес <b>{network}</b> для отправки крипты.\n"
-            f"После отправки пришлите хеш транзакции через раздел «💬 Поддержка»."
+            f"⏳ Ожидайте — администратор пришлёт вам адрес <b>{network}</b> для отправки криптовалюты."
         )
         await message.answer(text, reply_markup=order_info_keyboard(order_id), parse_mode="HTML")
 
@@ -423,19 +399,79 @@ async def _create_p2p_order(
             f"💰 Клиент получит: {_fmt_rub(amount_rub)} ₽\n"
             f"📬 Реквизиты клиента: <code>{escape_html(user_payment_details)}</code>\n"
             f"💱 Курс: {_fmt_rub(rate)} ₽\n\n"
-            f"⚠️ Напишите клиенту адрес для приёма крипты через кнопку «💬 Написать клиенту»."
+            f"⚠️ Отправьте клиенту адрес для приёма крипты через кнопку «Ввести реквизиты»."
         )
         await notify_admins(bot, admin_text, reply_markup=manual_pending_keyboard(order_id))
-
-    logger.info(
-        "P2P-заявка #%s создана: action=%s, coin=%s, amount_rub=%s, amount_crypto=%s",
-        order_id, action, coin, amount_rub, amount_crypto,
-    )
 
     await state.clear()
 
 
-# ==================== ОТМЕНА ====================
+# ==================== КЛИЕНТ ВВОДИТ ХЕШ ТРАНЗАКЦИИ (P2P SELL) ====================
+
+@router.callback_query(F.data.startswith("p2p_client_confirm_tx_"))
+async def p2p_client_confirm_tx_start(callback: CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split("_")[4])
+    order = await db.get_order(order_id)
+
+    if not order or order.user_id != callback.from_user.id:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    if order.status != 'pending':
+        await callback.answer("❌ Эта заявка уже обрабатывается или закрыта.", show_alert=True)
+        return
+
+    await state.update_data(p2p_tx_order_id=order_id)
+    await state.set_state(P2PStates.entering_client_tx_hash)
+
+    await callback.message.answer(
+        f"✏️ Введите <b>хеш транзакции</b> (TX Hash), подтверждающий отправку криптовалюты.\n"
+        f"Для отмены введите /cancel.",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.message(P2PStates.entering_client_tx_hash)
+async def p2p_client_tx_hash_received(message: Message, state: FSMContext, bot: Bot):
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Ввод хеша отменён.")
+        return
+
+    tx_hash = message.text.strip()
+    if len(tx_hash) < 10:
+        await message.answer("❌ Хеш слишком короткий. Скопируйте его из кошелька и попробуйте снова.")
+        return
+
+    data = await state.get_data()
+    order_id = data.get('p2p_tx_order_id')
+    order = await db.get_order(order_id)
+
+    if not order:
+        await message.answer("❌ Заявка не найдена.")
+        await state.clear()
+        return
+
+    # Сохраняем хеш и меняем статус на 'paid' (ожидает проверки админом)
+    await db.update_order_tx_hash(order_id, tx_hash, admin_id=0) # admin_id=0 значит сделал клиент
+    await db.update_order_status(order_id, 'paid', admin_comment="Клиент отправил крипту, хеш прикреплён", expected_status='pending')
+
+    await message.answer(
+        f"✅ Хеш транзакции принят! Заявка #{order.public_order_number} переведена в статус «На проверке».\n"
+        f"Ожидайте, администратор проверит поступление средств и переведёт вам рубли."
+    )
+
+    admin_text = (
+        f"🔔 <b>Клиент прислал хеш по заявке #{order.public_order_number} (Продажа)</b>\n\n"
+        f"👤 @{escape_html(order.username or 'N/A')}\n"
+        f"🪙 {order.crypto_type} ({order.network})\n"
+        f"🔗 Хеш: <code>{escape_html(tx_hash)}</code>\n\n"
+        f"Проверьте поступление крипты и подтвердите заявку в разделе «Заявки»."
+    )
+    await notify_admins(bot, admin_text)
+    await state.clear()
+
+
 @router.callback_query(F.data == "p2p_cancel")
 async def p2p_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()

@@ -102,12 +102,11 @@ async def admin_orders_pending(callback: CallbackQuery):
     for order in pending_orders[:10]:
         safe_username = html.escape(order.username) if order.username else 'N/A'
         text += (
-            f"<b>#{order.id}</b> | @{safe_username}\n"
+            f"<b>#{order.public_order_number or order.id}</b> | @{safe_username}\n"
             f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f} {order.crypto_type}\n"
-            f"   Кошелек: <code>{html.escape(order.crypto_address[:20])}...</code>\n"
-            f"   Создана: {order.created_at}\n\n"
+            f"   Тип: {order.order_type or 'shop'}\n\n"
         )
-        keyboard.button(text=f"Управление #{order.id}", callback_data=f"admin_order_manage_{order.id}")
+        keyboard.button(text=f"Управление #{order.public_order_number or order.id}", callback_data=f"admin_order_manage_{order.id}")
 
     keyboard.button(text="🔙 Назад", callback_data="admin_orders_menu")
     keyboard.adjust(1)
@@ -139,12 +138,11 @@ async def admin_orders_paid(callback: CallbackQuery):
     for order in paid_orders[:10]:
         safe_username = html.escape(order.username) if order.username else 'N/A'
         text += (
-            f"<b>#{order.id}</b> | @{safe_username}\n"
+            f"<b>#{order.public_order_number or order.id}</b> | @{safe_username}\n"
             f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f} {order.crypto_type}\n"
-            f"   Кошелек: <code>{html.escape(order.crypto_address[:20])}...</code>\n"
-            f"   Оплачена: {order.paid_at}\n\n"
+            f"   Тип: {order.order_type or 'shop'}\n\n"
         )
-        keyboard.button(text=f"Проверить #{order.id}", callback_data=f"admin_order_check_{order.id}")
+        keyboard.button(text=f"Проверить #{order.public_order_number or order.id}", callback_data=f"admin_order_check_{order.id}")
 
     keyboard.button(text="🔙 Назад", callback_data="admin_orders_menu")
     keyboard.adjust(1)
@@ -174,7 +172,7 @@ async def admin_orders_completed(callback: CallbackQuery):
     for order in completed_orders[:10]:
         safe_username = html.escape(order.username) if order.username else 'N/A'
         text += (
-            f"<b>#{order.id}</b> | @{safe_username}\n"
+            f"<b>#{order.public_order_number or order.id}</b> | @{safe_username}\n"
             f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"   Завершена: {order.completed_at}\n\n"
         )
@@ -207,7 +205,7 @@ async def admin_orders_cancelled(callback: CallbackQuery):
     for order in cancelled_orders[:10]:
         safe_username = html.escape(order.username) if order.username else 'N/A'
         text += (
-            f"<b>#{order.id}</b> | @{safe_username}\n"
+            f"<b>#{order.public_order_number or order.id}</b> | @{safe_username}\n"
             f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"   Отменена: {order.completed_at or 'N/A'}\n\n"
         )
@@ -268,7 +266,7 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
     safe_tx_hash = html.escape(order.tx_hash) if order.tx_hash else ''
 
     text = (
-        f"📋 <b>Заявка #{order.id}</b>\n\n"
+        f"📋 <b>Заявка #{order.public_order_number or order.id}</b>\n\n"
         f"Пользователь: @{safe_username} (ID: {order.user_id})\n"
         f"Криптовалюта: {order.crypto_type}\n"
         f"Сумма RUB: {order.amount_rub:,.0f} ₽\n"
@@ -293,13 +291,19 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
 
     keyboard = InlineKeyboardBuilder()
     if order.status == 'paid':
-        keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
+        if order.order_type == 'p2p_sell':
+            keyboard.button(text="✅ Крипта получена, выплатить рубли", callback_data=f"admin_approve_{order.id}")
+        else:
+            keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
         keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
     elif order.status == 'processing':
         keyboard.button(text="✏️ Ввести хеш транзакции", callback_data=f"admin_enter_tx_hash_{order.id}")
     elif order.status == 'pending':
-        keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
-        keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
+        if order.order_type == 'p2p_sell':
+            keyboard.button(text="🏦 Отправить адрес для крипты", callback_data=f"admin_p2p_address_{order.id}")
+        else:
+            keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
+            keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
     keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order.id}")
     keyboard.button(text="🔙 Назад", callback_data="admin_orders_menu")
     keyboard.adjust(1)
@@ -378,7 +382,7 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
     safe_tx_hash = html.escape(order.tx_hash) if order.tx_hash else ''
 
     text = (
-        f"📋 <b>Заявка #{order.id}</b>\n\n"
+        f"📋 <b>Заявка #{order.public_order_number or order.id}</b>\n\n"
         f"Пользователь: @{safe_username} (ID: {order.user_id})\n"
         f"Криптовалюта: {order.crypto_type}\n"
         f"Сумма RUB: {order.amount_rub:,.0f} ₽\n"
@@ -403,13 +407,19 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
 
     keyboard = InlineKeyboardBuilder()
     if order.status == 'paid':
-        keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
+        if order.order_type == 'p2p_sell':
+            keyboard.button(text="✅ Крипта получена, выплатить рубли", callback_data=f"admin_approve_{order.id}")
+        else:
+            keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
         keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
     elif order.status == 'processing':
         keyboard.button(text="✏️ Ввести хеш транзакции", callback_data=f"admin_enter_tx_hash_{order.id}")
     elif order.status == 'pending':
-        keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
-        keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
+        if order.order_type == 'p2p_sell':
+            keyboard.button(text="🏦 Отправить адрес для крипты", callback_data=f"admin_p2p_address_{order.id}")
+        else:
+            keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
+            keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
     keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order.id}")
     keyboard.button(text="🔙 Назад", callback_data="admin_orders_menu")
     keyboard.adjust(1)
@@ -420,7 +430,7 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data.startswith("admin_order_check_"))
 async def admin_order_check(callback: CallbackQuery, bot: Bot):
-    """Проверка конкретной заявки со статусом paid (после загрузки чека)."""
+    """Проверка конкретной заявки со статусом paid (после загрузки чека или получения хеша)."""
     admin_id = callback.from_user.id
     if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
@@ -444,10 +454,10 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
         logger.info(f"[ADMIN {admin_id}] Отправлен чек по заявке #{order_id}")
 
     safe_username = html.escape(order.username) if order.username else 'N/A'
-    safe_address = html.escape(order.crypto_address)
+    safe_address = html.escape(order.crypto_address) if order.crypto_address != 'N/A' else 'N/A'
 
     text = (
-        f"💳 <b>Проверка заявки #{order.id}</b>\n\n"
+        f"💳 <b>Проверка заявки #{order.public_order_number or order.id}</b>\n\n"
         f"Пользователь: @{safe_username} (ID: {order.user_id})\n"
         f"Сумма: {order.amount_rub:,.0f} ₽\n"
         f"Крипта: {order.amount_crypto:.8f} {order.crypto_type}\n"
@@ -457,12 +467,22 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
         text += f"Сеть: {order.network}\n"
     if order.user_payment_details:
         text += f"Реквизиты клиента: <code>{html.escape(order.user_payment_details)}</code>\n"
+    if order.tx_hash:
+        text += f"🔗 <b>Хеш транзакции клиента:</b> <code>{html.escape(order.tx_hash)}</code>\n"
     
-    text += f"Время оплаты: {order.paid_at}\n\nПроверьте поступление средств и подтвердите заявку."
+    text += f"\nВремя оплаты/отправки: {order.paid_at}\n\n"
+    if order.order_type == 'p2p_sell':
+        text += "Проверьте поступление криптовалюты на кошелек и подтвердите выплату рублей."
+    else:
+        text += "Проверьте поступление средств и подтвердите заявку."
 
     keyboard = InlineKeyboardBuilder()
-    keyboard.button(text="✅ Оплата получена", callback_data=f"admin_approve_{order.id}")
-    keyboard.button(text="❌ Оплата не поступила", callback_data=f"admin_reject_{order.id}")
+    if order.order_type == 'p2p_sell':
+        keyboard.button(text="✅ Крипта получена, выплатить рубли", callback_data=f"admin_approve_{order.id}")
+    else:
+        keyboard.button(text="✅ Оплата получена", callback_data=f"admin_approve_{order.id}")
+        
+    keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
     keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order.id}")
     keyboard.button(text="🔙 Назад", callback_data="admin_orders_paid")
     keyboard.adjust(1)
@@ -496,7 +516,7 @@ async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
         safe_address = html.escape(order.crypto_address)
         await bot.send_message(
             order.user_id,
-            f"📎 <b>Напоминание по заявке #{order.id}</b>\n\n"
+            f"📎 <b>Напоминание по заявке #{order.public_order_number or order.id}</b>\n\n"
             f"Пожалуйста, оплатите заявку и отправьте чек.\n\n"
             f"Сумма к оплате: {order.amount_rub:,.0f} ₽\n"
             f"Криптовалюта: {order.crypto_type}\n"
@@ -575,6 +595,71 @@ async def admin_send_message_to_user(message: Message, state: FSMContext, bot: B
     await state.clear()
 
 
+# ==================== ВВОД АДРЕСА ДЛЯ P2P SELL ====================
+
+@router.callback_query(F.data.startswith("admin_p2p_address_"))
+async def admin_p2p_address_start(callback: CallbackQuery, state: FSMContext):
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    order_id = int(callback.data.split("_")[3])
+    order = await db.get_order(order_id)
+    
+    if not order or order.order_type != 'p2p_sell' or order.status != 'pending':
+        await callback.answer("❌ Заявка недействительна или не в статусе 'pending'.", show_alert=True)
+        return
+
+    await state.update_data(p2p_order_id=order_id)
+    await state.set_state(AdminStates.entering_p2p_wallet_address)
+
+    await callback.message.answer(
+        f"🏦 Введите <b>адрес вашего кошелька</b> для приёма {order.crypto_type} ({order.network}), "
+        f"чтобы отправить его клиенту.\n\n"
+        f"Сумма: <b>{order.amount_crypto:.8f} {order.crypto_type}</b>\n"
+        f"Курс: {order.rate:,.0f} ₽\n\n"
+        f"Введите текст (или /cancel для отмены):"
+    )
+    await callback.answer()
+
+@router.message(AdminStates.entering_p2p_wallet_address)
+async def admin_p2p_address_finish(message: Message, state: FSMContext, bot: Bot):
+    if message.text == "/cancel":
+        await message.answer("❌ Отменено.")
+        await state.clear()
+        return
+
+    address = message.text.strip()
+    data = await state.get_data()
+    order_id = data.get('p2p_order_id')
+    order = await db.get_order(order_id)
+
+    if not order:
+        await message.answer("❌ Ошибка: заявка не найдена.")
+        await state.clear()
+        return
+
+    # Отправляем адрес клиенту и даем кнопку для ввода хеша
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📤 Я оплатил (Ввести хеш)", callback_data=f"p2p_client_confirm_tx_{order.id}")
+    
+    await bot.send_message(
+        order.user_id,
+        f"🏦 <b>Адрес для отправки {order.crypto_type} по заявке #{order.public_order_number}</b>\n\n"
+        f"Пожалуйста, переведите <b>{order.amount_crypto:.8f} {order.crypto_type}</b> (сеть {order.network}) на адрес:\n"
+        f"<code>{html.escape(address)}</code>\n\n"
+        f"⚠️ <b>Важно!</b> После отправки обязательно нажмите кнопку ниже и введите хеш транзакции, чтобы администратор быстрее подтвердил ваш перевод.",
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await message.answer(f"✅ Адрес отправлен клиенту. Ожидайте ввода хеша от клиента.")
+    await state.clear()
+
+
+# ==================== ПОДТВЕРЖДЕНИЕ ЗАЯВКИ ====================
+
 @router.callback_query(F.data.startswith("admin_approve_"))
 async def admin_approve_order(
     callback: CallbackQuery,
@@ -582,14 +667,47 @@ async def admin_approve_order(
     bot: Bot,
     admin_order_service: AdminOrderService
 ):
-    """Подтверждение заявки (авто или ручной режим)."""
+    """Подтверждение заявки (авто, ручной режим, или P2P Sell)."""
     admin_id = callback.from_user.id
     if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
     order_id = int(callback.data.split("_")[2])
-    logger.info(f"[ADMIN {admin_id}] Нажата кнопка 'Подтвердить оплату' для заявки #{order_id}")
+    logger.info(f"[ADMIN {admin_id}] Нажата кнопка 'Подтвердить' для заявки #{order_id}")
+    
+    order = await db.get_order(order_id)
+    if not order:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    # ---- ЛОГИКА ДЛЯ P2P SELL ----
+    if order.order_type == 'p2p_sell':
+        if order.status != 'paid':
+            await callback.answer("❌ Ожидался статус 'На проверке'.", show_alert=True)
+            return
+            
+        await db.update_order_status(order_id, 'completed', admin_comment="Выплата рублей произведена", admin_id=admin_id)
+        
+        user_text = (
+            f"✅ <b>Заявка #{order.public_order_number or order.id} успешно завершена!</b>\n\n"
+            f"Криптовалюта получена. Рубли в размере <b>{order.amount_rub:,.0f} ₽</b> "
+            f"отправлены на ваши реквизиты: <code>{html.escape(order.user_payment_details or '')}</code>.\n\n"
+            f"Спасибо за обмен!"
+        )
+        try:
+            await bot.send_message(order.user_id, user_text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
+
+        await callback.message.edit_text(
+            f"✅ Заявка #{order.public_order_number or order.id} завершена.\n\n"
+            f"Пользователь уведомлен о выплате {order.amount_rub:,.0f} ₽.",
+            reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup()
+        )
+        await callback.answer("Заявка завершена")
+        return
+    # ---- КОНЕЦ ЛОГИКИ P2P SELL ----
 
     payment_mode = await db.get_payment_mode()
 
@@ -610,7 +728,7 @@ async def admin_approve_order(
         explorer_url = get_explorer_url(order.crypto_type, tx_hash)
 
         user_text = (
-            f"✅ <b>Заявка #{order_id} выполнена!</b>\n\n"
+            f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"
             f"Криптовалюта отправлена:\n"
             f"<b>{order.amount_crypto:.8f} {order.crypto_type}</b>\n"
             f"На адрес: <code>{html.escape(order.crypto_address)}</code>\n\n"
@@ -623,7 +741,7 @@ async def admin_approve_order(
 
         admin_text = (
             f"💸 <b>Криптовалюта отправлена!</b>\n\n"
-            f"Заявка: #{order_id}\n"
+            f"Заявка: #{order.public_order_number or order.id}\n"
             f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"Кошелек: <code>{html.escape(order.crypto_address)}</code>\n"
             f"TX Hash: <code>{html.escape(tx_hash)}</code>\n"
@@ -639,7 +757,7 @@ async def admin_approve_order(
         await notify_admins(bot, admin_text, exclude_id=admin_id)
 
         result_text = (
-            f"✅ <b>Заявка #{order_id} выполнена!</b>\n\n"
+            f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"
             f"💸 Криптовалюта отправлена:\n"
             f"   Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"   TX Hash: <code>{html.escape(tx_hash)}</code>\n"
@@ -655,10 +773,6 @@ async def admin_approve_order(
         await callback.answer("Заявка подтверждена!")
 
     else:  # Ручной режим
-        order = await db.get_order(order_id)
-        if not order:
-            await callback.answer("❌ Заявка не найдена", show_alert=True)
-            return
         if order.status != 'paid':
             logger.warning(f"[ADMIN {admin_id}] Попытка подтвердить заявку #{order_id} со статусом {order.status}, требуется 'paid'")
             await callback.answer("❌ Заявка не в статусе 'оплачена'. Чек ещё не получен.", show_alert=True)
@@ -681,7 +795,7 @@ async def admin_approve_order(
         await state.update_data(confirming_order_id=order_id, confirming_admin=admin_id)
 
         user_text = (
-            f"✅ <b>Ваш платёж по заявке #{order_id} подтверждён!</b>\n\n"
+            f"✅ <b>Ваш платёж по заявке #{order.public_order_number or order.id} подтверждён!</b>\n\n"
             f"Сумма: {order.amount_rub:,.0f} ₽ получена.\n"
             f"Сейчас администратор отправит криптовалюту на ваш кошелёк.\n"
             f"Ожидайте транзакцию в ближайшее время."
@@ -693,7 +807,7 @@ async def admin_approve_order(
             logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
         admin_text = (
-            f"✏️ <b>Введите хеш транзакции для заявки #{order_id}</b>\n\n"
+            f"✏️ <b>Введите хеш транзакции для заявки #{order.public_order_number or order.id}</b>\n\n"
             f"Кошелёк получателя: <code>{html.escape(order.crypto_address)}</code>\n"
             f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"Формат: {_tx_hash_hint(order.crypto_type)}\n\n"
@@ -745,7 +859,7 @@ async def admin_start_tx_hash_input(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(confirming_order_id=order_id, confirming_admin=admin_id)
     await callback.message.answer(
-        f"✏️ <b>Введите хеш транзакции для заявки #{order_id}</b>\n\n"
+        f"✏️ <b>Введите хеш транзакции для заявки #{order.public_order_number or order.id}</b>\n\n"
         f"Кошелёк получателя: <code>{html.escape(order.crypto_address)}</code>\n"
         f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
         f"Формат: {_tx_hash_hint(order.crypto_type)}\n\n"
@@ -801,7 +915,6 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
             f"Хеш '{tx_hash}' не сохранён."
         )
         # НЕ очищаем state — админ может ввести хеш ещё раз.
-        # Подсказываем, как выйти из ситуации, если статус не processing.
         extra_hint = ""
         current = await db.get_order(order_id)
         if current and current.status == 'processing':
@@ -824,7 +937,7 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
     explorer_url = get_explorer_url(order.crypto_type, tx_hash)
 
     user_text = (
-        f"✅ <b>Криптовалюта по заявке #{order_id} отправлена!</b>\n\n"
+        f"✅ <b>Криптовалюта по заявке #{order.public_order_number or order.id} отправлена!</b>\n\n"
         f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
         f"Хеш транзакции: <code>{html.escape(tx_hash)}</code>\n"
     )
@@ -837,7 +950,7 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
-    await message.answer(f"✅ Хеш сохранён. Пользователь уведомлён. Заявка #{order_id} выполнена.")
+    await message.answer(f"✅ Хеш сохранён. Пользователь уведомлён. Заявка #{order.public_order_number or order.id} выполнена.")
     await state.clear()
 
 
@@ -876,7 +989,7 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
     await coupon_service.check_and_give_activity_coupons(order.user_id)
 
     user_text = (
-        f"✅ <b>Заявка #{order_id} выполнена!</b>\n\n"
+        f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"
         f"Криптовалюта будет отправлена вручную администратором.\n"
         f"Ожидайте сообщения с подтверждением."
     )
@@ -887,7 +1000,7 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
         logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
     await callback.message.edit_text(
-        f"✅ Заявка #{order_id} отмечена как выполненная вручную.\n\nПользователь уведомлен.",
+        f"✅ Заявка #{order.public_order_number or order.id} отмечена как выполненная вручную.\n\nПользователь уведомлен.",
         reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup()
     )
     await callback.answer()
@@ -911,7 +1024,7 @@ async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_serv
     try:
         await bot.send_message(
             order.user_id,
-            f"❌ <b>Заявка #{order_id} отклонена.</b>\n\n"
+            f"❌ <b>Заявка #{order.public_order_number or order.id} отклонена.</b>\n\n"
             f"Причина: Оплата не подтверждена.\n"
             f"По вопросам обратитесь в поддержку.",
             parse_mode="HTML"
@@ -920,7 +1033,7 @@ async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_serv
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
-    result_text = f"❌ Заявка #{order_id} отклонена."
+    result_text = f"❌ Заявка #{order.public_order_number or order.id} отклонена."
     reply_markup = InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup()
 
     try:
@@ -957,7 +1070,7 @@ async def admin_enter_payment_details_start(callback: CallbackQuery, state: FSMC
     await state.set_state(AdminStates.entering_manual_payment_details)
 
     await callback.message.answer(
-        f"💳 Введите платёжные реквизиты для заявки #{order_id}.\n"
+        f"💳 Введите платёжные реквизиты для заявки #{order.public_order_number or order.id}.\n"
         f"Например: карта, номер телефона, имя получателя, банк и т.д.\n\n"
         f"Отправьте текст (или /cancel для отмены):"
     )

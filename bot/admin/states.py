@@ -42,8 +42,11 @@ class AdminStates(StatesGroup):
     # Сообщение клиенту
     sending_message_to_user = State()
 
-    # Ручной режим (ввод реквизитов)
+    # Ручной режим (ввод реквизитов для оплаты рублями)
     entering_manual_payment_details = State()
+
+    # Ввод адреса кошелька для P2P Sell (клиент продаёт крипту)
+    entering_p2p_wallet_address = State()
 
     # Ввод хеша транзакции
     waiting_tx_hash = State()
