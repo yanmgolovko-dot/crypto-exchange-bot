@@ -1,5 +1,5 @@
 # bot/keyboards/__init__.py
-from .reply import main_menu_keyboard, cancel_keyboard
+from .reply import main_menu_keyboard, cancel_keyboard, exchange_menu_keyboard
 from .inline import (
     crypto_select_keyboard,
     currency_choice_keyboard,
@@ -18,6 +18,7 @@ from .inline import (
 __all__ = [
     'main_menu_keyboard',
     'cancel_keyboard',
+    'exchange_menu_keyboard',
     'crypto_select_keyboard',
     'currency_choice_keyboard',
     'amount_select_keyboard',
