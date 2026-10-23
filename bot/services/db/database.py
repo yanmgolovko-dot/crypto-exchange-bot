@@ -14,7 +14,7 @@ from .activity_award_repository import ActivityAwardRepository
 from .ticket_repository import TicketRepository
 from .review_repository import ReviewRepository
 from .partner_repository import PartnerRepository
-from .admins_repository import AdminsRepository  # новый импорт
+from .admins_repository import AdminsRepository
 from .unit_of_work import UnitOfWork
 from .base import db_retry
 
@@ -29,7 +29,6 @@ class Database:
 
     def __init__(self):
         self._connection = DatabaseConnection()
-        # Инициализируем репозитории
         self.users = UserRepository(self._connection)
         self.orders = OrderRepository(self._connection)
         self.wallets = WalletRepository(self._connection)
@@ -42,13 +41,15 @@ class Database:
         self.tickets = TicketRepository(self._connection)
         self.reviews = ReviewRepository(self._connection)
         self.partners = PartnerRepository(self._connection)
-        self.admins = AdminsRepository(self._connection)  # новый репозиторий
+        self.admins = AdminsRepository(self._connection)
 
-        # Прокси-методы для обратной совместимости
         # Пользователи
         self.add_or_update_user = self.users.add_or_update_user
         self.set_referrer = self.users.set_referrer
         self.get_user = self.users.get_user
+        self.get_user_by_username = self.users.get_user_by_username
+        self.get_user_by_referral_code = self.users.get_user_by_referral_code
+        self.set_user_referral_code = self.users.set_user_referral_code
         self.get_all_users = self.users.get_all_users
         self.ban_user = self.users.ban_user
         self.unban_user = self.users.unban_user
@@ -133,17 +134,11 @@ class Database:
         self.get_all_coupons = self.coupons.get_all_coupons
         self.toggle_coupon = self.coupons.toggle_coupon
 
-        # Партнёры
-        self.partners = PartnerRepository(self._connection)
-        # Админы
-        self.admins = AdminsRepository(self._connection)
-
         # Дополнительные методы
         self._backup_db = self._backup_db
         self.clear_all_orders = self.clear_all_orders
 
     def uow(self) -> UnitOfWork:
-        """Возвращает новый UnitOfWork для текущего соединения"""
         return UnitOfWork(self._connection)
 
     async def connect(self):
@@ -154,22 +149,17 @@ class Database:
 
     @db_retry()
     async def clear_all_orders(self) -> bool:
-        """Удаление всех заявок и связанных записей, но финансовые записи сохраняются с order_id = NULL"""
         await self._backup_db()
         async with self._connection.lock:
-            # Обнуляем order_id в таблицах, которые могут ссылаться на заказы
             await self._connection.conn.execute("UPDATE financial_records SET order_id = NULL WHERE order_id IS NOT NULL")
-            # Удаляем записи из таблиц, которые должны быть полностью очищены
             await self._connection.conn.execute("DELETE FROM crypto_transactions")
             await self._connection.conn.execute("DELETE FROM promo_usage WHERE order_id IS NOT NULL")
             await self._connection.conn.execute("DELETE FROM referral_earnings WHERE order_id IS NOT NULL")
-            # Теперь можно удалить сами заявки
             await self._connection.conn.execute("DELETE FROM exchange_orders")
             await self._connection.conn.commit()
             return True
 
     async def _backup_db(self):
-        """Создаёт резервную копию файла БД в папку backups с меткой времени."""
         try:
             db_path = self._connection.db_path
             if not os.path.exists(db_path):
@@ -178,8 +168,7 @@ class Database:
             backup_dir = os.path.join(os.path.dirname(db_path), "backups")
             os.makedirs(backup_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"exchange_backup_{timestamp}.db"
-            backup_path = os.path.join(backup_dir, backup_filename)
+            backup_path = os.path.join(backup_dir, f"exchange_backup_{timestamp}.db")
             shutil.copy2(db_path, backup_path)
             self.logger.info(f"Резервная копия БД создана: {backup_path}")
         except Exception as e:

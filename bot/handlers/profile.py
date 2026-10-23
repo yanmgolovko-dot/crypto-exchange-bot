@@ -1,9 +1,5 @@
 # bot/handlers/profile.py
-"""
-Обработчики для личного кабинета пользователя.
-Отображают информацию о пользователе, статистику, бонусы, промокоды,
-реферальную программу и настройки.
-"""
+"""Обработчики для личного кабинета пользователя."""
 
 import logging
 from datetime import datetime
@@ -27,29 +23,20 @@ router = Router()
 
 
 async def get_user_profile_keyboard(user_id: int):
-    """
-    Создаёт красивую и удобную инлайн-клавиатуру для личного кабинета.
-    Группирует кнопки по смыслу, размещает по две в ряд.
-    """
     kb = InlineKeyboardBuilder()
 
-    # Первая группа: статистика и бонусы
     kb.button(text="📊 Статистика", callback_data="user_stats")
     kb.button(text="💰 Бонусы", callback_data="user_bonus")
 
-    # Вторая группа: заявки и купоны
     kb.button(text="📋 Мои заявки", callback_data="user_orders")
     kb.button(text="🎫 Купоны", callback_data="user_my_coupons")
 
-    # Третья группа: промокоды и отзывы
     kb.button(text="🎁 Промокоды", callback_data="user_promos")
     kb.button(text="📝 Отзывы", callback_data="user_my_reviews")
 
-    # Четвёртая группа: рефералы и настройки
     kb.button(text="🔗 Рефералы", callback_data="user_referral")
     kb.button(text="⚙️ Настройки", callback_data="user_settings")
 
-    # Специальные кнопки для партнёров и админов
     partner = await db.partners.get_partner(user_id)
     if partner and partner.is_active:
         kb.button(text="🤝 Партнёрский кабинет", callback_data="user_partner_cabinet")
@@ -57,24 +44,26 @@ async def get_user_profile_keyboard(user_id: int):
     if await is_admin(user_id):
         kb.button(text="👑 Админка", callback_data="user_admin_panel")
 
-    # Кнопка выхода в главное меню
     kb.button(text="🔙 Главное меню", callback_data="user_back_main")
 
-    # Устанавливаем количество кнопок в ряду: 2 для основных, одиночные для специальных
-    # Подсчитаем:
-    # 8 основных кнопок -> 4 ряда по 2.
-    # Затем, если есть партнёрская, добавим её отдельным рядом.
-    # Если есть админская, добавим ещё рядом.
-    # Выход отдельным рядом.
-    layout = [2, 2, 2, 2]  # для 8 основных
+    layout = [2, 2, 2, 2]
     if partner and partner.is_active:
         layout.append(1)
     if await is_admin(user_id):
         layout.append(1)
-    layout.append(1)  # выход
+    layout.append(1)
     kb.adjust(*layout)
 
     return kb.as_markup()
+
+
+def _build_referral_link(bot_username: str, user) -> str:
+    """
+    Генерирует реф. ссылку на основе user.referral_code.
+    Если кода нет (старый пользователь) — fallback на REF{user_id}.
+    """
+    code = getattr(user, "referral_code", None) or f"REF{user.user_id}"
+    return f"https://t.me/{bot_username}?start={code}"
 
 
 @router.message(Command("profile"))
@@ -93,7 +82,6 @@ async def cmd_profile(message: Message):
             last_name=message.from_user.last_name
         )
         user = await db.get_user(user_id)
-        logger.info(f"[{user_id}] Запись пользователя создана")
 
     is_banned, ban_reason = await db.is_user_banned(user_id)
     if is_banned:
@@ -135,7 +123,6 @@ async def cmd_profile(message: Message):
 
 @router.callback_query(F.data == "user_orders")
 async def user_orders(callback: CallbackQuery):
-    """Показывает список заявок пользователя."""
     user_id = callback.from_user.id
     orders = await db.get_user_orders(user_id, limit=10)
     if not orders:
@@ -170,35 +157,27 @@ async def user_orders(callback: CallbackQuery):
 
 @router.callback_query(F.data == "user_partner_cabinet")
 async def user_partner_cabinet(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки «Партнёрский кабинет»."""
     user_id = callback.from_user.id
     logger.info(f"[{user_id}] Нажата кнопка партнёрского кабинета")
 
     partner = await db.partners.get_partner(user_id)
-    logger.info(f"Результат get_partner: {partner}")
-
     if not partner:
         logger.warning(f"Партнёрская запись отсутствует для {user_id}")
         await callback.answer("⛔ У вас нет доступа к партнёрскому кабинету.", show_alert=True)
         return
-
-    logger.info(f"Объект партнёра: is_active={partner.is_active}, balance={partner.balance}")
 
     if not partner.is_active:
         logger.warning(f"Партнёрская запись неактивна для {user_id}")
         await callback.answer("⛔ Ваш партнёрский аккаунт неактивен.", show_alert=True)
         return
 
-    logger.info(f"Партнёрский доступ разрешён для {user_id}. Переходим в партнёрский кабинет.")
-
     from bot.handlers.partner import partner_entry
-    await partner_entry(callback.from_user.id, callback.bot)  # <-- ИСПРАВЛЕНО
+    await partner_entry(callback.from_user.id, callback.bot)
     await callback.answer()
 
 
 @router.callback_query(F.data == "user_admin_panel")
 async def user_admin_panel(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки «Админка»."""
     if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет доступа к админ-панели.", show_alert=True)
         return
@@ -208,12 +187,9 @@ async def user_admin_panel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 @router.callback_query(F.data == "user_stats")
 async def user_stats(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошена статистика")
-
     stats = await db.get_user_stats(user_id)
     orders = await db.get_user_orders(user_id, limit=5)
 
@@ -229,16 +205,11 @@ async def user_stats(callback: CallbackQuery):
         text += "<b>Последние заявки:</b>\n"
         for order in orders:
             status_emoji = {
-                "pending": "⏳",
-                "paid": "💳",
-                "completed": "✅",
-                "cancelled": "❌"
+                "pending": "⏳", "paid": "💳", "completed": "✅", "cancelled": "❌"
             }.get(order.status, "❓")
             status_text = {
-                "pending": "Ожидает оплаты",
-                "paid": "На проверке",
-                "completed": "Выполнена",
-                "cancelled": "Отменена"
+                "pending": "Ожидает оплаты", "paid": "На проверке",
+                "completed": "Выполнена", "cancelled": "Отменена"
             }.get(order.status, "Неизвестно")
             text += (
                 f"{status_emoji} <b>#{order.id}</b> | {order.crypto_type}\n"
@@ -256,8 +227,6 @@ async def user_stats(callback: CallbackQuery):
 @router.callback_query(F.data == "user_bonus")
 async def user_bonus(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошен бонусный баланс")
-
     user = await db.get_user(user_id)
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
@@ -285,12 +254,9 @@ async def user_bonus(callback: CallbackQuery):
 @router.callback_query(F.data == "user_promos")
 async def user_promos(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошен список промокодов")
-
     try:
         all_promos = await db.get_all_promo_codes()
-        used_promo_ids = await db.get_user_used_promo_ids(user_id)
-        used_promo_ids = set(used_promo_ids)
+        used_promo_ids = set(await db.get_user_used_promo_ids(user_id))
         now = datetime.now().isoformat()
         available = []
         used = []
@@ -333,8 +299,6 @@ async def user_promos(callback: CallbackQuery):
 @router.callback_query(F.data == "user_my_coupons")
 async def user_my_coupons(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошен список купонов")
-
     coupons = await coupon_service.get_user_coupons(user_id)
 
     if not coupons:
@@ -349,8 +313,7 @@ async def user_my_coupons(callback: CallbackQuery):
             on_str = "на всю сумму" if coup.discount_on == 'order' else "на комиссию"
             valid_str = "бессрочно"
             if coup.valid_to:
-                valid_date = coup.valid_to[:10]
-                valid_str = f"до {valid_date}"
+                valid_str = f"до {coup.valid_to[:10]}"
             text += (
                 f"• <b>{escape_html(coup.code)}</b>\n"
                 f"  Скидка: {discount_str} {on_str}\n"
@@ -367,8 +330,6 @@ async def user_my_coupons(callback: CallbackQuery):
 @router.callback_query(F.data == "user_my_reviews")
 async def user_my_reviews(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошены свои отзывы")
-
     reviews = await review_service.get_user_reviews(user_id)
     if not reviews:
         text = "📝 У вас пока нет отзывов."
@@ -392,15 +353,13 @@ async def user_my_reviews(callback: CallbackQuery):
 @router.callback_query(F.data == "user_referral")
 async def user_referral(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошена реферальная программа")
-
     user = await db.get_user(user_id)
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
 
     bot_info = await callback.bot.get_me()
-    referral_link = f"https://t.me/{bot_info.username}?start=ref{user.user_id}"
+    referral_link = _build_referral_link(bot_info.username, user)
 
     text = (
         f"🔗 <b>Реферальная программа</b>\n\n"
@@ -422,8 +381,6 @@ async def user_referral(callback: CallbackQuery):
 @router.callback_query(F.data == "user_settings")
 async def user_settings(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Запрошены настройки")
-
     user = await db.get_user(user_id)
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
@@ -447,8 +404,6 @@ async def user_settings(callback: CallbackQuery):
 @router.callback_query(F.data == "user_toggle_notifications")
 async def user_toggle_notifications(callback: CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Переключение уведомлений")
-
     user = await db.get_user(user_id)
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)

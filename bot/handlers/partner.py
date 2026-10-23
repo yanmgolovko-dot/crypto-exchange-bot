@@ -37,17 +37,16 @@ def partner_keyboard():
 
 
 async def partner_entry(user_id: int, bot: Bot):
-    """Вход в партнёрский кабинет."""
     logger.info(f"partner_entry: вход для пользователя {user_id}")
-    
+
     partner = await db.partners.get_partner(user_id)
     logger.info(f"partner_entry: результат get_partner = {partner}")
-    
+
     if not partner or not partner.is_active:
         logger.warning(f"partner_entry: доступ запрещён для {user_id}, partner={partner}")
         await bot.send_message(user_id, "⛔ У вас нет доступа к партнёрскому кабинету.")
         return
-    
+
     logger.info(f"partner_entry: доступ разрешён, отправляем клавиатуру")
     await bot.send_message(
         user_id,
@@ -59,7 +58,6 @@ async def partner_entry(user_id: int, bot: Bot):
 
 @router.message(Command("partner"))
 async def cmd_partner(message: Message):
-    """Альтернативный вход по команде /partner."""
     await partner_entry(message.from_user.id, message.bot)
 
 
@@ -96,8 +94,15 @@ async def partner_link(callback: CallbackQuery):
     if not partner:
         await callback.answer("⛔ Доступ запрещён", show_alert=True)
         return
+
+    user = await db.get_user(user_id)
+    if not user:
+        await callback.answer("⛔ Пользователь не найден", show_alert=True)
+        return
+
     bot_info = await callback.bot.get_me()
-    link = f"https://t.me/{bot_info.username}?start=ref{user_id}"
+    code = user.referral_code or f"REF{user.user_id}"
+    link = f"https://t.me/{bot_info.username}?start={code}"
     text = (
         f"🔗 <b>Ваша реферальная ссылка:</b>\n"
         f"<code>{escape_html(link)}</code>\n\n"
@@ -148,7 +153,7 @@ async def withdraw_amount_received(message: Message, state: FSMContext):
 
 @router.callback_query(WithdrawStates.waiting_method)
 async def withdraw_method_chosen(callback: CallbackQuery, state: FSMContext):
-    method = callback.data.split("_")[-1]  # card, btc, ltc, usdt
+    method = callback.data.split("_")[-1]
     await state.update_data(method=method)
     await state.set_state(WithdrawStates.waiting_details)
     prompts = {
@@ -176,7 +181,6 @@ async def withdraw_details_received(message: Message, state: FSMContext):
         await message.answer(
             f"✅ {msg}\n\nВаша заявка будет обработана администратором."
         )
-        # Уведомляем админов
         admin_text = (
             f"💰 <b>Новая заявка на вывод</b>\n"
             f"Партнёр: {escape_html(message.from_user.username or str(user_id))} (ID: {user_id})\n"
@@ -214,9 +218,7 @@ async def partner_withdraw_history(callback: CallbackQuery):
         text = "📜 <b>История выводов</b>\n\n"
         for req in requests:
             status_emoji = {
-                'pending': '⏳',
-                'approved': '✅',
-                'rejected': '❌'
+                'pending': '⏳', 'approved': '✅', 'rejected': '❌'
             }.get(req.status, '❓')
             text += (
                 f"{status_emoji} #{req.id} от {req.created_at[:10]}\n"

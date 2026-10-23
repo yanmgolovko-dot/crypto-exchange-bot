@@ -19,10 +19,6 @@ router = Router()
 
 
 async def is_admin(user_id: int) -> bool:
-    """
-    Проверяет, является ли пользователь администратором.
-    Сначала проверяет SUPER_ADMIN_IDS из .env, затем таблицу admins в БД.
-    """
     if user_id in config.ADMIN_IDS:
         return True
 
@@ -37,7 +33,6 @@ async def is_admin(user_id: int) -> bool:
 
 
 async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int = None):
-    """Отправка уведомления всем администраторам (из .env и из БД)."""
     admin_ids = set(config.ADMIN_IDS)
     try:
         admins_from_db = await db.admins.get_all_admins()
@@ -62,7 +57,6 @@ async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int 
 
 
 async def send_receipt(chat_id, file_path, caption, bot: Bot):
-    """Отправляет чек в зависимости от расширения файла."""
     if not file_path or not os.path.exists(file_path):
         return False
     try:
@@ -83,6 +77,7 @@ def admin_main_keyboard():
     keyboard.button(text="💰 Финансы", callback_data="admin_finance_menu")
     keyboard.button(text="⚙️ Курсы обмена", callback_data="admin_rates_menu")
     keyboard.button(text="👥 Пользователи", callback_data="admin_users_menu")
+    keyboard.button(text="🔗 Реф. ссылки", callback_data="admin_ref_links_menu")
     keyboard.button(text="💎 Кошельки", callback_data="admin_wallets_menu")
     keyboard.button(text="🎯 Маркетинг", callback_data="admin_marketing_menu")
     keyboard.button(text="🪄 Фейк-менеджер", callback_data="admin_fake_menu")
@@ -91,12 +86,12 @@ def admin_main_keyboard():
     keyboard.button(text="🔍 Диагностика", callback_data="admin_diagnostic")
     keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
     keyboard.button(text="👑 Управление админами", callback_data="admin_manage_admins")
-    keyboard.adjust(2, 2, 2, 2, 2, 1, 1)
+    # 13 кнопок: 6 рядов по 2 + 1 одиночная
+    keyboard.adjust(2, 2, 2, 2, 2, 2, 1)
     return keyboard.as_markup()
 
 
 async def _build_admin_main_text() -> str:
-    """Собирает текст главного меню админ-панели."""
     stats = await db.get_dashboard_stats()
     online = await db.get_online_users(minutes=5)
     payment_mode = await db.get_payment_mode()
@@ -127,7 +122,6 @@ async def _build_admin_main_text() -> str:
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
-    """Главное меню админ-панели."""
     if not await is_admin(message.from_user.id):
         await message.answer("⛔ У вас нет доступа к админ-панели.")
         return
@@ -139,7 +133,6 @@ async def cmd_admin(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_dashboard")
 async def admin_dashboard(callback: CallbackQuery):
-    """Подробный дашборд с финансовой статистикой."""
     if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
@@ -182,7 +175,6 @@ async def admin_dashboard(callback: CallbackQuery):
 
 @router.callback_query(F.data == "admin_back_main")
 async def admin_back_main(callback: CallbackQuery, state: FSMContext):
-    """Возврат в главное меню админки."""
     if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return

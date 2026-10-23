@@ -45,7 +45,7 @@ class AdminStates(StatesGroup):
     # Ручной режим (ввод реквизитов для оплаты рублями)
     entering_manual_payment_details = State()
 
-    # Ввод адреса кошелька для P2P Sell (клиент продаёт крипту)
+    # Ввод адреса кошелька для P2P Sell
     entering_p2p_wallet_address = State()
 
     # Ввод хеша транзакции
@@ -82,3 +82,7 @@ class AdminStates(StatesGroup):
 
     # Курсы обмена (P2P)
     waiting_for_new_rate = State()
+
+    # Реферальные ссылки
+    waiting_for_target_user = State()
+    waiting_for_new_ref_code = State()

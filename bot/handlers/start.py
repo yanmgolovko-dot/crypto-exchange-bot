@@ -1,9 +1,8 @@
 # bot/handlers/start.py
-"""
-Обработчик команды /start и регистрации пользователя.
-"""
+"""Обработчик команды /start и регистрации пользователя."""
 
 import logging
+import re
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
@@ -20,9 +19,10 @@ from bot.utils.helpers import escape_html
 logger = logging.getLogger(__name__)
 router = Router()
 
+_LEGACY_REF_RE = re.compile(r"^ref(\d+)$", re.IGNORECASE)
+
 
 def get_mode_selection_keyboard():
-    """Создает инлайн-клавиатуру для выбора режима."""
     builder = InlineKeyboardBuilder()
     builder.button(text="🛒 Шоп", callback_data="mode_shop")
     builder.button(text="🔄 Обмен", callback_data="mode_exchange")
@@ -30,11 +30,30 @@ def get_mode_selection_keyboard():
     return builder.as_markup()
 
 
+async def _resolve_referrer(payload: str):
+    """
+    Возвращает user_id реферера по полезной нагрузке /start.
+    Сначала пробует найти пользователя по реферальному коду (vanity),
+    затем — legacy-формат ref{user_id}.
+    """
+    if not payload:
+        return None
+
+    # 1) Vanity code (REF12345 или ILYA или любой кастомный)
+    referrer = await db.get_user_by_referral_code(payload)
+    if referrer:
+        return referrer.user_id
+
+    # 2) Legacy ref{user_id}
+    m = _LEGACY_REF_RE.match(payload)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, user_service: UserService):
-    """
-    Обработчик команды /start.
-    """
     user_id = message.from_user.id
     first_name = message.from_user.first_name
     username = message.from_user.username
@@ -43,14 +62,13 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
 
     await state.clear()
 
-    # Разбираем реферальный параметр
     args = message.text.split()
     referred_by = None
-    if len(args) > 1 and args[1].startswith("ref"):
+    if len(args) > 1:
         try:
-            referred_by = int(args[1][3:])
-        except ValueError:
-            pass
+            referred_by = await _resolve_referrer(args[1])
+        except Exception as e:
+            logger.warning(f"[{user_id}] Ошибка парсинга реф. параметра: {e}")
 
     try:
         await user_service.register_or_update(
@@ -73,7 +91,7 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
         f"👋 Привет, {escape_html(first_name)}!\n\n"
         f"Добро пожаловать в наш сервис!\n\n"
         f"Пожалуйста, выберите, что вы хотите сделать:\n"
-        f"🛒 <b>Шоп</b> — быстрая покупка криптовалюты на холодный кошелек (BTC, LTC)\n"
+        f"🛒 <b>Шоп</b> — быстрая покупка криптовалюты на холодный кошелёк (BTC, LTC)\n"
         f"🔄 <b>Обмен</b> — P2P обмен с выводом на биржу (USDT, TRX, BTC, LTC)"
     )
 
@@ -81,16 +99,13 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
     logger.info(f"[{user_id}] Отправлено приветственное сообщение с выбором режима")
 
 
-# ==================== ОБРАБОТЧИКИ ВЫБОРА РЕЖИМА ====================
-
 @router.callback_query(F.data == "mode_shop")
 async def select_shop_mode(callback: CallbackQuery):
-    """Пользователь выбрал режим 'Шоп'."""
     try:
         await callback.message.delete()
     except Exception:
         pass
-    
+
     await callback.message.answer(
         "Вы в режиме 🛒 <b>Шоп</b>.\n\nВыберите действие в меню ниже 👇",
         reply_markup=main_menu_keyboard(),
@@ -98,9 +113,9 @@ async def select_shop_mode(callback: CallbackQuery):
     )
     await callback.answer()
 
+
 @router.callback_query(F.data == "mode_exchange")
 async def select_exchange_mode(callback: CallbackQuery):
-    """Пользователь выбрал режим 'Обмен'."""
     try:
         await callback.message.delete()
     except Exception:
@@ -115,11 +130,9 @@ async def select_exchange_mode(callback: CallbackQuery):
     )
     await callback.answer()
 
-# ==================== КНОПКА СМЕНЫ РЕЖИМА ====================
 
 @router.message(F.text == "🔄 Сменить режим")
 async def change_mode_handler(message: Message):
-    """Обработчик нажатия на текстовую кнопку смены режима."""
     text = (
         "Выберите нужный режим:\n\n"
         "🛒 <b>Шоп</b> — покупка криптовалюты (BTC, LTC)\n"
@@ -128,24 +141,19 @@ async def change_mode_handler(message: Message):
     await message.answer(text, reply_markup=get_mode_selection_keyboard(), parse_mode="HTML")
 
 
-# ==================== ОБРАБОТЧИКИ ДЛЯ РЕЖИМА ОБМЕН ====================
-
 @router.message(F.text == "🔴 Купить (Обмен)")
 async def exchange_buy_start(message: Message):
-    """Начало покупки в режиме Обмен."""
     await message.answer(
         "Выберите валюту, которую хотите <b>купить</b>:",
         reply_markup=exchange_crypto_select_keyboard("buy"),
         parse_mode="HTML"
     )
 
+
 @router.message(F.text == "🟢 Продать (Обмен)")
 async def exchange_sell_start(message: Message):
-    """Начало продажи в режиме Обмен."""
     await message.answer(
         "Выберите валюту, которую хотите <b>продать</b>:",
         reply_markup=exchange_crypto_select_keyboard("sell"),
         parse_mode="HTML"
     )
-
-# ВАЖНО: Заглушка в самом низу удалена! Теперь кнопки exch_ будет обрабатывать файл p2p.py

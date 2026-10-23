@@ -13,7 +13,8 @@ from .tickets import router as tickets_router
 from .broadcast import router as broadcast_router
 from .admins import router as admins_router
 from .health import router as health_router
-from .rates import router as rates_router  # <--- ДОБАВИЛИ
+from .rates import router as rates_router
+from .ref_links import router as ref_links_router
 
 router = Router()
 router.include_router(main_router)
@@ -29,6 +30,7 @@ router.include_router(tickets_router)
 router.include_router(broadcast_router)
 router.include_router(admins_router)
 router.include_router(health_router)
-router.include_router(rates_router)  # <--- ДОБАВИЛИ
+router.include_router(rates_router)
+router.include_router(ref_links_router)
 
 __all__ = ['router']
