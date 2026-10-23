@@ -72,6 +72,9 @@ def init_db_sync():
             last_reminder_at TIMESTAMP,
             coupon_id INTEGER,
             public_order_number INTEGER,
+            order_type TEXT DEFAULT 'shop',
+            network TEXT,
+            user_payment_details TEXT,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
@@ -149,7 +152,6 @@ def init_db_sync():
             updated_by INTEGER
         )
     """)
-    # Вставляем начальные записи, если их нет
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('payment_mode', 'auto')")
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('reminders_enabled', '1')")
     logger.debug("Таблица system_settings проверена/создана, добавлены payment_mode и reminders_enabled по умолчанию")
@@ -305,7 +307,6 @@ def init_db_sync():
     """)
     logger.debug("Таблица ticket_messages проверена/создана")
 
-    # ===== ТАБЛИЦА reviews (с поддержкой NULL для user_id и order_id) =====
     c.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -318,18 +319,18 @@ def init_db_sync():
             admin_reply TEXT,
             replied_at TIMESTAMP,
             username TEXT,
+            fake_exchanges INTEGER,
             FOREIGN KEY (user_id) REFERENCES users(user_id),
             FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
         )
     """)
     logger.debug("Таблица reviews проверена/создана (с nullable полями)")
 
-    # Проверяем, не осталось ли ограничений NOT NULL на order_id (если таблица была создана ранее с ними)
     try:
         cursor = conn.execute("PRAGMA table_info(reviews)")
         columns = cursor.fetchall()
         order_id_col = next((col for col in columns if col[1] == 'order_id'), None)
-        if order_id_col and order_id_col[3] == 1:  # notnull = 1
+        if order_id_col and order_id_col[3] == 1:
             logger.warning("Обнаружено NOT NULL ограничение на order_id в таблице reviews. Выполняется миграция...")
             c.execute("""
                 CREATE TABLE reviews_new (
@@ -343,13 +344,14 @@ def init_db_sync():
                     admin_reply TEXT,
                     replied_at TIMESTAMP,
                     username TEXT,
+                    fake_exchanges INTEGER,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     FOREIGN KEY (order_id) REFERENCES exchange_orders(id)
                 )
             """)
             c.execute("""
-                INSERT INTO reviews_new (id, user_id, order_id, rating, comment, created_at, is_approved, admin_reply, replied_at, username)
-                SELECT id, user_id, order_id, rating, comment, created_at, is_approved, admin_reply, replied_at, username FROM reviews
+                INSERT INTO reviews_new (id, user_id, order_id, rating, comment, created_at, is_approved, admin_reply, replied_at, username, fake_exchanges)
+                SELECT id, user_id, order_id, rating, comment, created_at, is_approved, admin_reply, replied_at, username, NULL FROM reviews
             """)
             c.execute("DROP TABLE reviews")
             c.execute("ALTER TABLE reviews_new RENAME TO reviews")
@@ -422,7 +424,6 @@ def init_db_sync():
     c.execute("INSERT OR IGNORE INTO partner_settings (id, level_rewards) VALUES (1, ?)", (default_rewards,))
     logger.debug("Таблица partner_settings проверена/создана")
 
-    # ===== ТАБЛИЦА АДМИНИСТРАТОРОВ =====
     c.execute("""
         CREATE TABLE IF NOT EXISTS admins (
             user_id INTEGER PRIMARY KEY REFERENCES users(user_id),
@@ -483,6 +484,32 @@ def init_db_sync():
         logger.info("Колонка public_order_number добавлена в exchange_orders")
     except sqlite3.OperationalError:
         logger.debug("Колонка public_order_number уже существует")
+
+    # --- Новые колонки для P2P (order_type, network, user_payment_details) ---
+    try:
+        c.execute("ALTER TABLE exchange_orders ADD COLUMN order_type TEXT DEFAULT 'shop'")
+        logger.info("Колонка order_type добавлена в exchange_orders")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка order_type уже существует")
+
+    try:
+        c.execute("ALTER TABLE exchange_orders ADD COLUMN network TEXT")
+        logger.info("Колонка network добавлена в exchange_orders")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка network уже существует")
+
+    try:
+        c.execute("ALTER TABLE exchange_orders ADD COLUMN user_payment_details TEXT")
+        logger.info("Колонка user_payment_details добавлена в exchange_orders")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка user_payment_details уже существует")
+
+    # --- Фейковые сделки для отзывов ---
+    try:
+        c.execute("ALTER TABLE reviews ADD COLUMN fake_exchanges INTEGER")
+        logger.info("Колонка fake_exchanges добавлена в reviews")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка fake_exchanges уже существует")
 
     # ===== ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКА ЗАЯВОК =====
     try:

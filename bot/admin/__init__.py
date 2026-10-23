@@ -5,14 +5,15 @@ from .orders import router as orders_router
 from .finance import router as finance_router
 from .users import router as users_router
 from .wallets import router as wallets_router
-from .marketing import router as marketing_router   # содержит купоны, промокоды, отзывы, партнёров
-from .fake import router as fake_router             # содержит управление фейками
+from .marketing import router as marketing_router
+from .fake import router as fake_router
 from .settings import router as settings_router
 from .diagnostic import router as diagnostic_router
-from .tickets import router as tickets_router       # тикеты
-from .broadcast import router as broadcast_router   # массовая рассылка
-from .admins import router as admins_router         # управление администраторами
-from .health import router as health_router         # /health — health-check для админов
+from .tickets import router as tickets_router
+from .broadcast import router as broadcast_router
+from .admins import router as admins_router
+from .health import router as health_router
+from .rates import router as rates_router  # <--- ДОБАВИЛИ
 
 router = Router()
 router.include_router(main_router)
@@ -28,3 +29,6 @@ router.include_router(tickets_router)
 router.include_router(broadcast_router)
 router.include_router(admins_router)
 router.include_router(health_router)
+router.include_router(rates_router)  # <--- ДОБАВИЛИ
+
+__all__ = ['router']

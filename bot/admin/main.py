@@ -23,15 +23,12 @@ async def is_admin(user_id: int) -> bool:
     Проверяет, является ли пользователь администратором.
     Сначала проверяет SUPER_ADMIN_IDS из .env, затем таблицу admins в БД.
     """
-    # Проверка по .env (суперадмины)
     if user_id in config.ADMIN_IDS:
         return True
 
-    # Проверка по таблице admins через репозиторий
     try:
         return await db.admins.is_admin(user_id)
     except AttributeError:
-        # Если репозиторий ещё не добавлен, используем прямой запрос (для обратной совместимости)
         async with db._connection.conn.execute(
             "SELECT 1 FROM admins WHERE user_id = ?", (user_id,)
         ) as cursor:
@@ -41,14 +38,12 @@ async def is_admin(user_id: int) -> bool:
 
 async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int = None):
     """Отправка уведомления всем администраторам (из .env и из БД)."""
-    # Собираем всех админов: из .env и из БД
     admin_ids = set(config.ADMIN_IDS)
     try:
         admins_from_db = await db.admins.get_all_admins()
         for admin in admins_from_db:
             admin_ids.add(admin.user_id)
     except AttributeError:
-        # fallback: прямой запрос
         async with db._connection.conn.execute("SELECT user_id FROM admins") as cursor:
             rows = await cursor.fetchall()
             for row in rows:
@@ -59,10 +54,7 @@ async def notify_admins(bot: Bot, text: str, reply_markup=None, exclude_id: int 
             continue
         try:
             await bot.send_message(
-                admin_id,
-                text,
-                reply_markup=reply_markup,
-                parse_mode="HTML"
+                admin_id, text, reply_markup=reply_markup, parse_mode="HTML"
             )
             logger.info(f"Уведомление отправлено админу {admin_id}")
         except Exception as e:
@@ -89,6 +81,7 @@ def admin_main_keyboard():
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📋 Заявки", callback_data="admin_orders_menu")
     keyboard.button(text="💰 Финансы", callback_data="admin_finance_menu")
+    keyboard.button(text="⚙️ Курсы обмена", callback_data="admin_rates_menu")
     keyboard.button(text="👥 Пользователи", callback_data="admin_users_menu")
     keyboard.button(text="💎 Кошельки", callback_data="admin_wallets_menu")
     keyboard.button(text="🎯 Маркетинг", callback_data="admin_marketing_menu")
@@ -98,25 +91,18 @@ def admin_main_keyboard():
     keyboard.button(text="🔍 Диагностика", callback_data="admin_diagnostic")
     keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
     keyboard.button(text="👑 Управление админами", callback_data="admin_manage_admins")
-    keyboard.adjust(2, 2, 2, 1, 1, 1, 1)
+    keyboard.adjust(2, 2, 2, 2, 2, 1, 1)
     return keyboard.as_markup()
 
 
-@router.message(Command("admin"))
-async def cmd_admin(message: Message, state: FSMContext):
-    """Главное меню админ-панели."""
-    if not await is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа к админ-панели.")
-        return
-
-    await state.clear()
-
+async def _build_admin_main_text() -> str:
+    """Собирает текст главного меню админ-панели."""
     stats = await db.get_dashboard_stats()
     online = await db.get_online_users(minutes=5)
     payment_mode = await db.get_payment_mode()
     mode_text = "Авто" if payment_mode == 'auto' else "Ручной"
 
-    text = (
+    return (
         f"🔐 <b>Админ-панель</b>\n\n"
         f"👥 <b>Пользователи:</b>\n"
         f"   Всего: {stats['total_users']}\n"
@@ -138,6 +124,16 @@ async def cmd_admin(message: Message, state: FSMContext):
         f"⚙️ <b>Текущий режим оплаты:</b> {mode_text}"
     )
 
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message, state: FSMContext):
+    """Главное меню админ-панели."""
+    if not await is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа к админ-панели.")
+        return
+
+    await state.clear()
+    text = await _build_admin_main_text()
     await message.answer(text, reply_markup=admin_main_keyboard(), parse_mode="HTML")
 
 
@@ -191,5 +187,14 @@ async def admin_back_main(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
     await state.clear()
-    await cmd_admin(callback.message, state)
+
+    text = await _build_admin_main_text()
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=admin_main_keyboard(), parse_mode="HTML"
+        )
+    except Exception:
+        await callback.message.answer(
+            text, reply_markup=admin_main_keyboard(), parse_mode="HTML"
+        )
     await callback.answer()
