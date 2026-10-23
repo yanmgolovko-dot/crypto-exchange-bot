@@ -13,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.services.user_service import UserService
 from bot.services.coupon_service import coupon_service
 from bot.services.partner_service import partner_service
-from bot.keyboards import main_menu_keyboard, exchange_menu_keyboard
+from bot.keyboards import main_menu_keyboard, exchange_menu_keyboard, exchange_crypto_select_keyboard
 from bot.services.db import db
 from bot.utils.helpers import escape_html
 
@@ -73,8 +73,8 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
         f"👋 Привет, {escape_html(first_name)}!\n\n"
         f"Добро пожаловать в наш сервис!\n\n"
         f"Пожалуйста, выберите, что вы хотите сделать:\n"
-        f"🛒 <b>Шоп</b> — быстрая покупка криптовалюты (BTC, LTC)\n"
-        f"🔄 <b>Обмен</b> — P2P обмен (функционал в разработке)"
+        f"🛒 <b>Шоп</b> — быстрая покупка криптовалюты на холодный кошелек (BTC, LTC)\n"
+        f"🔄 <b>Обмен</b> — P2P обмен с выводом на биржу (USDT, TRX, BTC, LTC)"
     )
 
     await message.answer(welcome_text, reply_markup=get_mode_selection_keyboard(), parse_mode="HTML")
@@ -87,7 +87,7 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
 async def select_shop_mode(callback: CallbackQuery):
     """Пользователь выбрал режим 'Шоп'."""
     try:
-        await callback.message.delete() # Удаляем сообщение с инлайн-кнопками
+        await callback.message.delete()
     except Exception:
         pass
     
@@ -108,7 +108,8 @@ async def select_exchange_mode(callback: CallbackQuery):
 
     await callback.message.answer(
         "Вы в режиме 🔄 <b>Обмен</b>.\n\n"
-        "Этот раздел находится в разработке. Скоро здесь появится функционал P2P обмена!",
+        "Здесь вы можете купить или продать популярные монеты через официальную биржу.\n"
+        "Выберите действие в меню ниже 👇",
         reply_markup=exchange_menu_keyboard(),
         parse_mode="HTML"
     )
@@ -121,13 +122,43 @@ async def change_mode_handler(message: Message):
     """Обработчик нажатия на текстовую кнопку смены режима."""
     text = (
         "Выберите нужный режим:\n\n"
-        "🛒 <b>Шоп</b> — покупка криптовалюты\n"
-        "🔄 <b>Обмен</b> — P2P обмен (в разработке)"
+        "🛒 <b>Шоп</b> — покупка криптовалюты (BTC, LTC)\n"
+        "🔄 <b>Обмен</b> — покупка/продажа на биржу (USDT, TRX, BTC, LTC)"
     )
     await message.answer(text, reply_markup=get_mode_selection_keyboard(), parse_mode="HTML")
 
 
-# Заглушка для кнопки внутри режима Обмен, чтобы бот не молчал
-@router.message(F.text == "🔄 Обмен (в разработке)")
-async def exchange_placeholder(message: Message):
-    await message.answer("🛠 Раздел Обмен еще в разработке. Мы работаем над этим!")
+# ==================== ОБРАБОТЧИКИ ДЛЯ РЕЖИМА ОБМЕН ====================
+
+@router.message(F.text == "🔴 Купить (Обмен)")
+async def exchange_buy_start(message: Message):
+    """Начало покупки в режиме Обмен."""
+    await message.answer(
+        "Выберите валюту, которую хотите <b>купить</b>:",
+        reply_markup=exchange_crypto_select_keyboard("buy"),
+        parse_mode="HTML"
+    )
+
+@router.message(F.text == "🟢 Продать (Обмен)")
+async def exchange_sell_start(message: Message):
+    """Начало продажи в режиме Обмен."""
+    await message.answer(
+        "Выберите валюту, которую хотите <b>продать</b>:",
+        reply_markup=exchange_crypto_select_keyboard("sell"),
+        parse_mode="HTML"
+    )
+
+# Заглушка для будущего функционала
+@router.callback_query(F.data.startswith("exch_"))
+async def exchange_placeholder(callback: CallbackQuery):
+    """Временная заглушка для кнопок обмена."""
+    action = callback.data.split("_")[1]
+    coin = callback.data.split("_")[2]
+    
+    action_text = "покупки" if action == "buy" else "продажи"
+    await callback.message.edit_text(
+        f"🛠 Функционал {action_text} <b>{coin}</b> в разработке.\n"
+        f"Скоро здесь появится полноценный обмен через биржу!",
+        parse_mode="HTML"
+    )
+    await callback.answer()
