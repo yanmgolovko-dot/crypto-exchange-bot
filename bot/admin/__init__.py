@@ -12,6 +12,7 @@ from .diagnostic import router as diagnostic_router
 from .tickets import router as tickets_router       # тикеты
 from .broadcast import router as broadcast_router   # массовая рассылка
 from .admins import router as admins_router         # управление администраторами
+from .health import router as health_router         # /health — health-check для админов
 
 router = Router()
 router.include_router(main_router)
@@ -26,3 +27,4 @@ router.include_router(diagnostic_router)
 router.include_router(tickets_router)
 router.include_router(broadcast_router)
 router.include_router(admins_router)
+router.include_router(health_router)

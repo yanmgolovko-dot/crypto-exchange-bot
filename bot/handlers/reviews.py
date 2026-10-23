@@ -28,42 +28,55 @@ async def reviews_public(message: Message):
     user_id = message.from_user.id
     logger.info(f"[{user_id}] Запрос публичных отзывов")
 
-    reviews = await review_service.get_approved_reviews(limit=10)
-    if not reviews:
-        text = "📝 Пока нет ни одного отзыва. Будьте первым!"
-    else:
-        text = "📝 <b>Отзывы наших клиентов</b>\n\n"
-        for rev in reviews:
-            # Определяем отображаемое имя
-            if rev.username:
-                display_name = rev.username
-            else:
-                user = await db.get_user(rev.user_id)
-                if user and user.username:
-                    display_name = f"@{user.username}"
-                elif user and user.first_name:
-                    display_name = user.first_name
+    try:
+        reviews = await review_service.get_approved_reviews(limit=10)
+        if not reviews:
+            text = "📝 Пока нет ни одного отзыва. Будьте первым!"
+        else:
+            text = "📝 <b>Отзывы наших клиентов</b>\n\n"
+            for rev in reviews:
+                # Определяем отображаемое имя
+                if rev.username:
+                    display_name = rev.username
+                elif rev.user_id:
+                    user = await db.get_user(rev.user_id)
+                    if user and user.username:
+                        display_name = f"@{user.username}"
+                    elif user and user.first_name:
+                        display_name = user.first_name
+                    else:
+                        display_name = f"ID {rev.user_id}"
                 else:
-                    display_name = f"ID {rev.user_id}"
+                    display_name = "Аноним"
 
-            # Определяем количество сделок
-            if rev.fake_exchanges is not None:
-                exchanges = rev.fake_exchanges
-            else:
-                stats = await db.get_user_stats(rev.user_id) if rev.user_id else {'total_orders': 0}
-                exchanges = stats.get('total_orders', 0)
+                # Определяем количество сделок
+                if getattr(rev, 'fake_exchanges', None) is not None:
+                    exchanges = rev.fake_exchanges
+                elif rev.user_id:
+                    try:
+                        stats = await db.get_user_stats(rev.user_id)
+                        exchanges = stats.get('total_orders', 0)
+                    except Exception:
+                        exchanges = 0
+                else:
+                    exchanges = 0
 
-            rating_stars = "⭐" * rev.rating + "☆" * (5 - rev.rating)
+                rating_stars = "⭐" * rev.rating + "☆" * (5 - rev.rating)
 
-            text += f"<b>{escape_html(display_name)}</b>  {rating_stars}  (<i>{exchanges} обменов</i>)\n"
-            text += f"{escape_html(rev.comment) if rev.comment else '<i>Без комментария</i>'}\n"
-            if rev.admin_reply:
-                text += f"<i>Ответ администратора: {escape_html(rev.admin_reply)}</i>\n"
-            text += f"—— {rev.created_at[:10]}\n\n"
+                text += f"<b>{escape_html(display_name)}</b>  {rating_stars}  (<i>{exchanges} обменов</i>)\n"
+                text += f"{escape_html(rev.comment) if rev.comment else '<i>Без комментария</i>'}\n"
+                if rev.admin_reply:
+                    text += f"<i>Ответ администратора: {escape_html(rev.admin_reply)}</i>\n"
+                date_str = str(rev.created_at)[:10] if rev.created_at else ""
+                text += f"—— {date_str}\n\n"
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Главное меню", callback_data="reviews_back_main")
-    await message.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+        kb = InlineKeyboardBuilder()
+        kb.button(text="🔙 Главное меню", callback_data="reviews_back_main")
+        await message.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке отзывов: {e}", exc_info=True)
+        await message.answer("❌ Произошла ошибка при загрузке отзывов. Попробуйте позже.")
 
 
 @router.callback_query(F.data == "reviews_back_main")

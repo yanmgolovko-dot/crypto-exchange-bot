@@ -3,7 +3,7 @@
 
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from aiogram import Bot
 
@@ -141,11 +141,34 @@ class AdminOrderService:
         }
 
     async def approve_order_manual(self, order_id: int, admin_id: int) -> bool:
+        """
+        Ручное подтверждение оплаты: переводит заявку из 'paid' в 'processing'.
+        Дальше админ вводит хеш транзакции и заявка завершается.
+        """
         logger.info(f"[ADMIN {admin_id}] Ручное подтверждение заявки #{order_id}")
         order = await self.db.get_order(order_id)
-        if not order or order.status != 'paid':
-            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не в статусе paid")
+        if not order:
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
             return False
+        if order.status != 'paid':
+            logger.warning(
+                f"[ADMIN {admin_id}] Заявка #{order_id} в статусе '{order.status}', "
+                f"перевод в processing невозможен"
+            )
+            return False
+
+        # Атомарный перевод paid → processing
+        ok = await self.db.orders.update_order_status(
+            order_id, 'processing', expected_status='paid'
+        )
+        if not ok:
+            logger.warning(
+                f"[ADMIN {admin_id}] Не удалось перевести заявку #{order_id} в processing "
+                f"(статус изменился параллельно)"
+            )
+            return False
+
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} переведена в processing")
         return True
 
     async def complete_order_with_tx_hash(
@@ -154,15 +177,38 @@ class AdminOrderService:
         tx_hash: str,
         admin_id: int,
         bot: Bot
-    ) -> bool:
+    ) -> Tuple[bool, str]:
+        """
+        Завершает заявку с валидированным хешем.
+
+        ВАЖНО: если хеш не прошёл валидацию или заявка не в статусе 'processing',
+        заявка НЕ переводится в 'completed', финансовая запись НЕ создаётся,
+        клиент и партнёры НЕ уведомляются.
+
+        :return: (ok, error_message). При ok=True error_message == "".
+        """
         logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
+
         order = await self.db.get_order(order_id)
         if not order:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
-            return False
+            return False, "Заявка не найдена"
 
+        if order.status == 'completed':
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} уже завершена")
+            return False, "Заявка уже завершена"
+
+        # 1) Валидация и сохранение хеша (проверяет статус processing + формат)
+        ok, err = await self.db.orders.update_order_tx_hash_checked(order_id, tx_hash, admin_id)
+        if not ok:
+            logger.warning(
+                f"[ADMIN {admin_id}] Хеш отклонён для заявки #{order_id}: {err}. "
+                f"Заявка НЕ переводится в completed."
+            )
+            return False, err
+
+        # 2) Хеш валиден и сохранён — завершаем заявку и пишем финансы
         async with self.db.uow() as uow:
-            await uow.orders.update_order_tx_hash(order_id, tx_hash, admin_id)
             await uow.orders.update_order_status(
                 order_id,
                 'completed',
@@ -178,7 +224,7 @@ class AdminOrderService:
                 created_by=admin_id
             )
             await uow.commit()
-        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена")
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, комиссия записана")
 
         # Выдаём купоны за активность
         await coupon_service.check_and_give_activity_coupons(order.user_id)
@@ -188,7 +234,7 @@ class AdminOrderService:
 
         # Отправляем предложение оставить отзыв
         await ask_for_review(bot, order.user_id, order_id)
-        return True
+        return True, ""
 
     async def reject_order(self, order_id: int, admin_id: int) -> bool:
         logger.info(f"[ADMIN {admin_id}] Отклонение заявки #{order_id}")

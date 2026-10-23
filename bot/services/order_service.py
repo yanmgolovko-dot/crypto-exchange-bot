@@ -141,6 +141,12 @@ class OrderService:
         coupon_id: Optional[int] = None
     ) -> int:
         logger.info(f"Создание заявки для пользователя {user_id}, {crypto_type}, сумма {amount_rub} ₽")
+
+        # 0, "" и None → None. Иначе SQLite проверит FOREIGN KEY
+        # на несуществующую запись coupons.id = 0 и упадёт с IntegrityError.
+        if not coupon_id:
+            coupon_id = None
+
         async with self.db.uow() as uow:
             order_id = await uow.orders.create_order(
                 user_id=user_id,

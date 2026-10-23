@@ -2,10 +2,11 @@
 """Репозиторий для работы с заявками."""
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
 
 from .base import BaseRepository, db_retry
+from bot.utils.tx_validator import validate_tx_hash
 import aiosqlite
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,10 @@ class Order:
     last_reminder_at: Optional[str] = None
     coupon_id: Optional[int] = None
     public_order_number: Optional[int] = None
+
+
+# Статусы, в которых разрешён ввод/обновление tx-хеша
+_TX_HASH_ALLOWED_STATUSES = {"processing"}
 
 
 class OrderRepository(BaseRepository):
@@ -128,53 +133,117 @@ class OrderRepository(BaseRepository):
             return None
 
     @db_retry()
-    async def update_order_status(self, order_id: int, status: str, 
+    async def update_order_status(self, order_id: int, status: str,
                                    admin_comment: str = None,
-                                   admin_id: int = None) -> bool:
+                                   admin_id: int = None,
+                                   expected_status: Optional[str] = None) -> bool:
         """
         Обновляет статус заявки.
-        Для статусов 'paid' и 'completed' автоматически заполняет соответствующие временные метки.
+
+        :param expected_status: если задан — апдейт выполняется только при условии,
+            что текущий статус заявки равен expected_status (атомарно, без гонок).
+            При несовпадении возвращает False и ничего не меняет.
+        :return: True, если строка обновлена (или expected_status не задан).
         """
-        logger.info(f"Обновление статуса заявки #{order_id} на '{status}'")
+        logger.info(
+            "Обновление статуса заявки #%s на '%s' (expected=%s)",
+            order_id, status, expected_status,
+        )
         async with self.lock:
+            where = "id = ?"
+            params_tail: tuple = (order_id,)
+            if expected_status is not None:
+                where += " AND status = ?"
+                params_tail = (order_id, expected_status)
+
             if status == 'paid':
-                await self.conn.execute("""
+                cursor = await self.conn.execute(f"""
                     UPDATE exchange_orders 
                     SET status = ?, admin_comment = ?, paid_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (status, admin_comment, order_id))
-                logger.debug(f"Установлено paid_at для заявки #{order_id}")
+                    WHERE {where}
+                """, (status, admin_comment) + params_tail)
             elif status == 'completed':
-                await self.conn.execute("""
+                cursor = await self.conn.execute(f"""
                     UPDATE exchange_orders 
                     SET status = ?, admin_comment = ?, completed_at = CURRENT_TIMESTAMP,
                         admin_checked_by = ?, admin_checked_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (status, admin_comment, admin_id, order_id))
-                logger.debug(f"Установлено completed_at и admin_checked для заявки #{order_id}")
+                    WHERE {where}
+                """, (status, admin_comment, admin_id) + params_tail)
             else:
-                await self.conn.execute("""
+                cursor = await self.conn.execute(f"""
                     UPDATE exchange_orders 
                     SET status = ?, admin_comment = ?
-                    WHERE id = ?
-                """, (status, admin_comment, order_id))
+                    WHERE {where}
+                """, (status, admin_comment) + params_tail)
+
             await self.conn.commit()
-            logger.info(f"Статус заявки #{order_id} изменён")
-            return True
+            updated = cursor.rowcount > 0
+            if updated:
+                logger.info(f"Статус заявки #{order_id} изменён")
+            else:
+                logger.warning(
+                    "Статус заявки #%s НЕ изменён: ожидался '%s', фактический статус другой",
+                    order_id, expected_status,
+                )
+            return updated
 
     @db_retry()
-    async def update_order_tx_hash(self, order_id: int, tx_hash: str, admin_id: int) -> bool:
-        """Сохраняет хеш транзакции и отмечает администратора."""
-        logger.info(f"Сохранение хеша транзакции для заявки #{order_id}: {tx_hash}")
+    async def update_order_tx_hash_checked(
+        self, order_id: int, tx_hash: str, admin_id: int
+    ) -> Tuple[bool, str]:
+        """
+        Валидирует и сохраняет хеш транзакции.
+
+        Проверки:
+        - заявка существует;
+        - статус заявки в _TX_HASH_ALLOWED_STATUSES (processing);
+        - формат хеша соответствует валюте заявки.
+
+        :return: (ok, message). При ok=True message == "".
+        """
+        order = await self.get_order(order_id)
+        if order is None:
+            return False, f"Заявка #{order_id} не найдена."
+
+        if order.status not in _TX_HASH_ALLOWED_STATUSES:
+            return (
+                False,
+                f"Заявка #{order_id} в статусе '{order.status}'. "
+                f"Хеш можно ввести только в статусе: "
+                f"{', '.join(sorted(_TX_HASH_ALLOWED_STATUSES))}.",
+            )
+
+        ok, err = validate_tx_hash(order.crypto_type, tx_hash)
+        if not ok:
+            return False, err
+
+        tx_hash = tx_hash.strip()
         async with self.lock:
             await self.conn.execute("""
                 UPDATE exchange_orders 
                 SET tx_hash = ?, admin_checked_by = ?, admin_checked_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (tx_hash, admin_id, order_id))
+                WHERE id = ? AND status = ?
+            """, (tx_hash, admin_id, order_id, order.status))
             await self.conn.commit()
-            logger.debug(f"Хеш сохранён, admin_checked_by={admin_id}")
-            return True
+            logger.info(
+                "Хеш сохранён для заявки #%s (валюта=%s, admin=%s)",
+                order_id, order.crypto_type, admin_id,
+            )
+            return True, ""
+
+    @db_retry()
+    async def update_order_tx_hash(self, order_id: int, tx_hash: str, admin_id: int) -> bool:
+        """
+        Совместимая обёртка над update_order_tx_hash_checked.
+        Возвращает только bool — для старых вызовов.
+        Новый код должен использовать update_order_tx_hash_checked.
+        """
+        ok, err = await self.update_order_tx_hash_checked(order_id, tx_hash, admin_id)
+        if not ok:
+            logger.warning(
+                "update_order_tx_hash отклонён для #%s: %s", order_id, err
+            )
+        return ok
 
     @db_retry()
     async def add_bank_receipt(self, order_id: int, receipt_path: str) -> bool:

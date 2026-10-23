@@ -32,15 +32,42 @@ class PaymentService:
 
     async def save_receipt(self, order_id: int, file_path: str) -> bool:
         """
-        Сохраняет путь к чеку в заявке и меняет статус на 'paid'.
-        :param order_id: ID заявки
-        :param file_path: путь к сохранённому файлу чека
-        :return: True в случае успеха
+        Идемпотентно сохраняет путь к чеку и переводит заявку в 'paid'.
+
+        - Если заявка не найдена — False.
+        - Если статус заявки не 'pending' (уже paid/processing/completed/...) —
+          чек не перезаписываем, False.
+        - Иначе атомарно: добавляем путь и меняем статус с expected_status='pending'.
+          Если гонка (статус уже сменился) — False.
+
+        :return: True только если чек принят впервые.
         """
-        logger.info(f"Сохранение чека для заявки #{order_id}, путь: {file_path}")
-        await self.db.add_bank_receipt(order_id, file_path)
-        await self.db.update_order_status(order_id, "paid")
-        logger.info(f"Статус заявки #{order_id} изменён на paid")
+        order = await self.db.orders.get_order(order_id)
+        if order is None:
+            logger.warning("save_receipt: заявка #%s не найдена", order_id)
+            return False
+
+        if order.status != "pending":
+            logger.info(
+                "save_receipt: заявка #%s уже в статусе '%s' — повторный чек не принимаем",
+                order_id, order.status,
+            )
+            return False
+
+        logger.info("Сохранение чека для заявки #%s, путь: %s", order_id, file_path)
+        await self.db.orders.add_bank_receipt(order_id, file_path)
+
+        ok = await self.db.orders.update_order_status(
+            order_id, "paid", expected_status="pending"
+        )
+        if not ok:
+            logger.warning(
+                "save_receipt: не удалось перевести заявку #%s в 'paid' "
+                "(статус изменился параллельно)", order_id,
+            )
+            return False
+
+        logger.info("Статус заявки #%s изменён на paid", order_id)
         return True
 
     async def notify_admins_about_receipt(

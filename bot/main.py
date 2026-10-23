@@ -8,7 +8,6 @@ import sys
 import time
 from datetime import datetime
 import traceback
-from logging.handlers import RotatingFileHandler
 
 # ========== НАСТРОЙКА ЛОГГЕРА СРАЗУ ПОСЛЕ ИМПОРТА СТАНДАРТНЫХ БИБЛИОТЕК ==========
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -45,14 +44,22 @@ from bot.services.admin_user_service import AdminUserService
 from bot.services.admin_wallet_service import AdminWalletService
 from bot.services.admin_finance_service import AdminFinanceService
 from bot.services.partner_service import partner_service
+from bot.services.expire_service import ExpireService
 from bot.handlers import router as user_router
 from bot.admin import router as admin_router
+
+# Новые middleware
+from bot.middlewares.rate_limit import RateLimitMiddleware
+from bot.middlewares.error_handler import global_error_handler
 
 # Отключаем буферизацию stdout для Windows
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(line_buffering=True)
 
 logger = logging.getLogger(__name__)
+
+# Метка старта процесса — нужна для /health (uptime)
+PROCESS_START_TIME = time.time()
 
 print("🔧 Создание сессии бота...")
 session = AiohttpSession(timeout=300)
@@ -77,6 +84,7 @@ admin_order_service = AdminOrderService(db, wallet_manager)
 admin_user_service = AdminUserService(db)
 admin_wallet_service = AdminWalletService(db, wallet_manager)
 admin_finance_service = AdminFinanceService(db)
+expire_service = ExpireService(db)
 
 # ==================== МИДЛВАРЬ ДЛЯ ПРОКИДЫВАНИЯ ЗАВИСИМОСТЕЙ ====================
 async def services_middleware(handler, event, data):
@@ -90,6 +98,7 @@ async def services_middleware(handler, event, data):
     data['admin_user_service'] = admin_user_service
     data['admin_wallet_service'] = admin_wallet_service
     data['admin_finance_service'] = admin_finance_service
+    data['expire_service'] = expire_service
     data['bot'] = bot
     return await handler(event, data)
 
@@ -120,13 +129,28 @@ async def update_activity_middleware(handler, event, data):
         asyncio.create_task(db.users.update_last_activity(user_id))
     return await handler(event, data)
 
-# Регистрируем мидлвари
+# Регистрируем мидлвари.
+# Порядок важен: middleware выполняются в порядке регистрации (FIFO).
+# 1) rate_limit — отсекаем спам до обращения к БД
+# 2) services — прокидываем зависимости
+# 3) check_banned — проверка бана (требует user_service из services)
+# 4) update_activity — пишем активность
+rate_limit_middleware = RateLimitMiddleware(max_requests=20, window_seconds=60)
+
+dp.message.middleware(rate_limit_middleware)
+dp.callback_query.middleware(rate_limit_middleware)
+
 dp.message.middleware(services_middleware)
 dp.callback_query.middleware(services_middleware)
+
 dp.message.middleware(check_banned_middleware)
 dp.callback_query.middleware(check_banned_middleware)
+
 dp.message.middleware(update_activity_middleware)
 dp.callback_query.middleware(update_activity_middleware)
+
+# ==================== ГЛОБАЛЬНЫЙ ERROR HANDLER ====================
+dp.errors.register(global_error_handler)
 
 dp.include_router(admin_router)
 dp.include_router(user_router)
@@ -173,6 +197,25 @@ async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentServic
         await asyncio.sleep(60)
 
 
+# ==================== ФОНОВЫЙ ВОРКЕР АВТООТМЕНЫ ПРОСРОЧЕННЫХ ЗАЯВОК ====================
+async def expire_worker(bot: Bot, expire_service: ExpireService):
+    """
+    Раз в 15 минут ищет pending-заявки старше order_ttl_hours
+    и переводит их в cancelled.
+    """
+    logger.info("Запуск воркера автоотмены просроченных заявок")
+    # Небольшая задержка на старте, чтобы не конкурировать с инициализацией БД
+    await asyncio.sleep(30)
+    while True:
+        try:
+            count = await expire_service.expire_and_notify(bot)
+            if count:
+                logger.info(f"Автоотмена: отменено {count} просроченных заявок")
+        except Exception as e:
+            logger.exception(f"Критическая ошибка в воркере автоотмены: {e}")
+        await asyncio.sleep(15 * 60)  # 15 минут
+
+
 async def on_startup():
     print("🟢 on_startup: начало")
     start_time = time.time()
@@ -213,6 +256,8 @@ async def on_startup():
     # Устанавливаем уровни для шумных библиотек
     logging.getLogger('aiogram').setLevel(logging.WARNING)
     logging.getLogger('aiohttp').setLevel(logging.WARNING)
+    logging.getLogger('aiosqlite').setLevel(logging.WARNING)
+    logging.getLogger('asyncio').setLevel(logging.WARNING)
 
     logger.info(f"Уровень логирования установлен: {db_log_level} (из БД)")
     print(f"🟢 Логгеры настроены")
@@ -281,6 +326,7 @@ async def main():
     await on_startup()
 
     asyncio.create_task(reminder_worker(bot, db, payment_service))
+    asyncio.create_task(expire_worker(bot, expire_service))
 
     try:
         print("🟢 Запуск polling с skip_updates=True...")

@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _tx_hash_hint(crypto_type: str) -> str:
+    """Возвращает подсказку по формату хеша для конкретной валюты."""
+    cur = (crypto_type or "").upper()
+    if cur in {"BTC", "LTC", "BCH", "DOGE", "DASH"}:
+        return f"{cur} — ровно 64 hex-символа"
+    return f"{cur} — минимум 32 hex-символа"
+
+
 @router.callback_query(F.data == "admin_orders_menu")
 async def admin_orders_menu(callback: CallbackQuery):
     """Меню управления заявками."""
@@ -265,6 +273,8 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
     if order.status == 'paid':
         keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
         keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
+    elif order.status == 'processing':
+        keyboard.button(text="✏️ Ввести хеш транзакции", callback_data=f"admin_enter_tx_hash_{order.id}")
     elif order.status == 'pending':
         keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
         keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
@@ -368,6 +378,8 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
     if order.status == 'paid':
         keyboard.button(text="✅ Подтвердить", callback_data=f"admin_approve_{order.id}")
         keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order.id}")
+    elif order.status == 'processing':
+        keyboard.button(text="✏️ Ввести хеш транзакции", callback_data=f"admin_enter_tx_hash_{order.id}")
     elif order.status == 'pending':
         keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order.id}")
         keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order.id}")
@@ -625,6 +637,20 @@ async def admin_approve_order(
             await callback.answer("❌ Заявка не в статусе 'оплачена'. Чек ещё не получен.", show_alert=True)
             return
 
+        # ВАЖНО: переводим paid → processing, чтобы затем стало возможно ввести tx-хеш.
+        approved = await admin_order_service.approve_order_manual(order_id, admin_id)
+        if not approved:
+            logger.error(
+                f"[ADMIN {admin_id}] Не удалось перевести заявку #{order_id} "
+                f"в processing. Статус не изменён."
+            )
+            await callback.answer(
+                "❌ Не удалось перевести заявку в обработку. "
+                "Возможно, статус уже изменился. Обновите список.",
+                show_alert=True,
+            )
+            return
+
         await state.update_data(confirming_order_id=order_id, confirming_admin=admin_id)
 
         user_text = (
@@ -642,7 +668,8 @@ async def admin_approve_order(
         admin_text = (
             f"✏️ <b>Введите хеш транзакции для заявки #{order_id}</b>\n\n"
             f"Кошелёк получателя: <code>{html.escape(order.crypto_address)}</code>\n"
-            f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n\n"
+            f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
+            f"Формат: {_tx_hash_hint(order.crypto_type)}\n\n"
             f"После ввода хеша пользователь получит ссылку для отслеживания.\n"
             f"Для отмены введите /cancel"
         )
@@ -650,6 +677,55 @@ async def admin_approve_order(
         await state.set_state(AdminStates.waiting_tx_hash)
 
         await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_enter_tx_hash_"))
+async def admin_start_tx_hash_input(callback: CallbackQuery, state: FSMContext):
+    """
+    Начать ввод хеша для заявки в статусе 'processing'.
+    Используется, когда админ уже подтвердил оплату, но хеш отклонён
+    (или сессия была прервана). Не меняет статус — он уже processing.
+    """
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    try:
+        order_id = int(callback.data.split("_")[4])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Некорректный callback", show_alert=True)
+        return
+
+    logger.info(f"[ADMIN {admin_id}] Начало ввода хеша для заявки #{order_id}")
+
+    order = await db.get_order(order_id)
+    if not order:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    if order.status != 'processing':
+        logger.warning(
+            f"[ADMIN {admin_id}] Заявка #{order_id} в статусе '{order.status}', "
+            f"ввод хеша доступен только для 'processing'"
+        )
+        await callback.answer(
+            f"❌ Заявка в статусе '{order.status}'. Ввод хеша доступен только "
+            f"для статуса 'processing'.",
+            show_alert=True,
+        )
+        return
+
+    await state.update_data(confirming_order_id=order_id, confirming_admin=admin_id)
+    await callback.message.answer(
+        f"✏️ <b>Введите хеш транзакции для заявки #{order_id}</b>\n\n"
+        f"Кошелёк получателя: <code>{html.escape(order.crypto_address)}</code>\n"
+        f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
+        f"Формат: {_tx_hash_hint(order.crypto_type)}\n\n"
+        f"Для отмены введите /cancel"
+    )
+    await state.set_state(AdminStates.waiting_tx_hash)
+    await callback.answer()
 
 
 @router.message(AdminStates.waiting_tx_hash)
@@ -668,14 +744,21 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
 
     if message.text == "/cancel":
         logger.info(f"[ADMIN {admin_id}] Ввод хеша отменён для заявки #{order_id}")
-        await message.answer("❌ Ввод хеша отменён.")
+        await message.answer(
+            "❌ Ввод хеша отменён.\n\n"
+            f"Заявка #{order_id} остаётся в статусе 'processing'. "
+            f"Вернуться к вводу хеша можно через карточку заявки."
+        )
         await state.clear()
         return
 
     tx_hash = message.text.strip()
     if len(tx_hash) < 10 or len(tx_hash) > 100:
-        logger.warning(f"[ADMIN {admin_id}] Некорректный хеш: {tx_hash}")
-        await message.answer("❌ Некорректный хеш. Введите ещё раз (или /cancel для отмены):")
+        logger.warning(f"[ADMIN {admin_id}] Некорректный хеш (длина {len(tx_hash)}): {tx_hash}")
+        await message.answer(
+            "❌ Некорректная длина хеша (должно быть от 10 до 100 символов).\n"
+            "Введите ещё раз или /cancel для отмены:"
+        )
         return
 
     order = await db.get_order(order_id)
@@ -684,11 +767,29 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
         await state.clear()
         return
 
-    success = await admin_order_service.complete_order_with_tx_hash(order_id, tx_hash, admin_id, bot)
-    if not success:
-        logger.error(f"[ADMIN {admin_id}] Не удалось завершить заявку #{order_id} с хешем {tx_hash}")
-        await message.answer("❌ Не удалось завершить заявку.")
-        await state.clear()
+    ok, err = await admin_order_service.complete_order_with_tx_hash(order_id, tx_hash, admin_id, bot)
+    if not ok:
+        logger.warning(
+            f"[ADMIN {admin_id}] Заявка #{order_id} НЕ завершена: {err} "
+            f"Хеш '{tx_hash}' не сохранён."
+        )
+        # НЕ очищаем state — админ может ввести хеш ещё раз.
+        # Подсказываем, как выйти из ситуации, если статус не processing.
+        extra_hint = ""
+        current = await db.get_order(order_id)
+        if current and current.status == 'processing':
+            extra_hint = "\n\nℹ️ Заявка в статусе 'processing' — можно повторить ввод хеша."
+        elif current:
+            extra_hint = (
+                f"\n\nℹ️ Текущий статус заявки: '{current.status}'. "
+                f"Ввод хеша доступен только в статусе 'processing'."
+            )
+        await message.answer(
+            f"❌ Не удалось завершить заявку #{order_id}.\n\n"
+            f"Причина: {html.escape(err)}"
+            f"{extra_hint}\n\n"
+            f"Для отмены введите /cancel."
+        )
         return
 
     logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, хеш {tx_hash} сохранён")

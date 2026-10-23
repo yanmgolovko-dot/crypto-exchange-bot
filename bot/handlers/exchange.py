@@ -53,6 +53,16 @@ logger.setLevel(logging.DEBUG)
 
 router = Router()
 
+# Максимальный размер PDF-чека
+MAX_RECEIPT_SIZE_MB = 10
+MAX_RECEIPT_SIZE_BYTES = MAX_RECEIPT_SIZE_MB * 1024 * 1024
+
+# Корень проекта (на два уровня выше bot/handlers/exchange.py)
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+_RECEIPTS_DIR = os.path.join(_PROJECT_ROOT, "data", "receipts")
+
 # Словарь для хранения менеджеров по ID пользователя
 user_managers: dict[int, OrderCreationManager] = {}
 
@@ -92,10 +102,27 @@ async def cancel_order_creation(callback: CallbackQuery, state: FSMContext):
 
 # ---------- ЗАГРУЗКА ЧЕКА ----------
 @router.callback_query(F.data.startswith("upload_receipt_"))
-async def process_upload_receipt(callback: CallbackQuery, state: FSMContext):
+async def process_upload_receipt(callback: CallbackQuery, state: FSMContext, db: Database):
     user_id = callback.from_user.id
     order_id = int(callback.data.split("_")[2])
     logger.info(f"[{user_id}] Кнопка 'Прикрепить чек' для #{order_id}")
+
+    order = await db.get_order(order_id)
+    if order is None:
+        await callback.answer("❌ Заявка не найдена.", show_alert=True)
+        return
+
+    display_number = order.public_order_number or order.id
+
+    # Чек можно прикрепить только к заявке в статусе 'pending'.
+    # Иначе не открываем диалог вообще — пользователь уже отправлял чек.
+    if order.status != "pending":
+        await callback.answer(
+            f"ℹ️ Чек по заявке #{display_number} уже принят (статус: {order.status}).",
+            show_alert=True,
+        )
+        return
+
     await state.update_data(order_id=order_id)
     await state.set_state(ExchangeStates.uploading_receipt)
     await callback.message.answer("📎 Отправьте PDF-файл с чеком:")
@@ -111,9 +138,20 @@ async def process_receipt_document(
     payment_service: PaymentService
 ):
     user_id = message.from_user.id
-    if message.document.mime_type != "application/pdf":
+    document = message.document
+
+    # 1) MIME-тип
+    if document.mime_type != "application/pdf":
         await message.answer("❌ Только PDF.")
         return
+
+    # 2) Размер файла
+    if document.file_size is not None and document.file_size > MAX_RECEIPT_SIZE_BYTES:
+        await message.answer(
+            f"❌ Файл слишком большой. Максимум {MAX_RECEIPT_SIZE_MB} МБ."
+        )
+        return
+
     data = await state.get_data()
     order_id = data.get('order_id')
     if not order_id:
@@ -121,18 +159,57 @@ async def process_receipt_document(
         await state.clear()
         return
 
-    document = message.document
-    file = await bot.get_file(document.file_id)
-    receipts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "receipts")
-    os.makedirs(receipts_dir, exist_ok=True)
-    file_path = os.path.join(receipts_dir, f"receipt_{order_id}_{document.file_id}.pdf")
-    await bot.download_file(file.file_path, file_path)
-
-    await payment_service.save_receipt(order_id, file_path)
+    # 3) Precheck: принимать чек можно только для заявки в статусе 'pending'
     order = await db.get_order(order_id)
+    if order is None:
+        await message.answer("❌ Заявка не найдена.")
+        await state.clear()
+        return
 
-    # Для отображения используем публичный номер, если он есть
-    display_number = order.public_order_number if order and order.public_order_number else order_id
+    display_number = order.public_order_number if order.public_order_number else order.id
+
+    if order.status != "pending":
+        logger.info(
+            "[%s] Повторная загрузка чека для #%s отклонена: статус '%s'",
+            user_id, order_id, order.status,
+        )
+        await message.answer(
+            f"ℹ️ По заявке #{display_number} чек уже принят (статус: {order.status}). "
+            f"Ожидайте проверки администратора."
+        )
+        await state.clear()
+        return
+
+    # 4) Скачивание файла
+    try:
+        file = await bot.get_file(document.file_id)
+        os.makedirs(_RECEIPTS_DIR, exist_ok=True)
+        file_path = os.path.join(
+            _RECEIPTS_DIR, f"receipt_{order_id}_{document.file_id}.pdf"
+        )
+        await bot.download_file(file.file_path, file_path)
+    except Exception as e:
+        logger.error(
+            "[%s] Ошибка скачивания чека для #%s: %s", user_id, order_id, e
+        )
+        await message.answer(
+            "❌ Не удалось сохранить файл. Попробуйте отправить ещё раз."
+        )
+        return
+
+    # 5) Идемпотентное сохранение (внутри — проверка статуса и expected_status)
+    accepted = await payment_service.save_receipt(order_id, file_path)
+    if not accepted:
+        logger.warning(
+            "[%s] save_receipt вернул False для #%s — повторный чек не принят",
+            user_id, order_id,
+        )
+        await message.answer(
+            f"ℹ️ Чек по заявке #{display_number} уже был принят ранее. "
+            f"Ожидайте проверки администратора."
+        )
+        await state.clear()
+        return
 
     await message.answer(
         f"✅ Чек получен! Заявка #{display_number} на проверке.",

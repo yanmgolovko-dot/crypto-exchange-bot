@@ -465,6 +465,39 @@ class ConfirmationStep(OrderCreationStep):
     async def process_callback(self, callback: CallbackQuery, services: Dict[str, Any]) -> bool:
         logger.info(f"[{self.data.user_id}] Обработка callback {callback.data} на шаге ConfirmationStep")
         if callback.data.startswith("confirm_order_"):
+            # Защита от повторного клика: если заявка уже создана, не создаём вторую.
+            if self.data.order_id:
+                logger.warning(
+                    f"[{self.data.user_id}] Повторное подтверждение, заявка #{self.data.order_id} уже создана"
+                )
+                await callback.answer("Заявка уже создана.", show_alert=True)
+                return True
+
+            # Гарантируем, что пользователь есть в таблице users,
+            # иначе create_order упадёт на FOREIGN KEY.
+            user_service = services.get('user_service')
+            if user_service:
+                try:
+                    await user_service.register_or_update(
+                        user_id=self.data.user_id,
+                        username=self.data.username,
+                        first_name=None,
+                        last_name=None,
+                    )
+                    logger.debug(
+                        f"[{self.data.user_id}] Пользователь зарегистрирован/обновлён перед созданием заявки"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.data.user_id}] Не удалось зарегистрировать пользователя: {e}",
+                        exc_info=True,
+                    )
+                    await callback.answer(
+                        "Ошибка регистрации пользователя. Попробуйте /start и повторите.",
+                        show_alert=True,
+                    )
+                    return True
+
             order_service = services['order_service']
             order_id = await order_service.create_order(
                 user_id=self.data.user_id,

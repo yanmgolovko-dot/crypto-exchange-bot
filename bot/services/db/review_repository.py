@@ -20,20 +20,24 @@ class Review:
     admin_reply: Optional[str]
     replied_at: Optional[str]
     username: Optional[str]
-    fake_exchanges: Optional[int] = None  # новое поле
+    fake_exchanges: Optional[int] = None
 
 
 class ReviewRepository(BaseRepository):
+
+    def _row_to_review(self, row) -> Review:
+        """Безопасно преобразует строку БД в объект Review, игнорируя лишние колонки."""
+        if row is None:
+            return None
+        valid_keys = Review.__annotations__.keys()
+        data = {k: row[k] for k in valid_keys if k in row.keys()}
+        return Review(**data)
 
     @db_retry()
     async def create_review(self, user_id: Optional[int], order_id: Optional[int], rating: int,
                             comment: Optional[str] = None,
                             username: Optional[str] = None,
                             fake_exchanges: Optional[int] = None) -> int:
-        """
-        Создаёт отзыв. user_id и order_id могут быть None (для фейк-отзывов).
-        fake_exchanges используется для указания количества сделок фейк-пользователя.
-        """
         logger.info(f"Создание отзыва от пользователя {user_id}, оценка {rating}, фейк-сделок: {fake_exchanges}")
         async with self.lock:
             cursor = await self.conn.execute("""
@@ -53,9 +57,7 @@ class ReviewRepository(BaseRepository):
                 "SELECT * FROM reviews WHERE id = ?", (review_id,)
             )
             row = await cursor.fetchone()
-            if row:
-                return Review(**dict(row))
-            return None
+            return self._row_to_review(row)
 
     @db_retry()
     async def get_reviews_by_user(self, user_id: int) -> List[Review]:
@@ -66,7 +68,7 @@ class ReviewRepository(BaseRepository):
                 (user_id,)
             )
             rows = await cursor.fetchall()
-            return [Review(**dict(row)) for row in rows]
+            return [self._row_to_review(row) for row in rows]
 
     @db_retry()
     async def get_approved_reviews(self, limit: int = 20) -> List[Review]:
@@ -77,7 +79,7 @@ class ReviewRepository(BaseRepository):
                 ORDER BY created_at DESC LIMIT ?
             """, (limit,))
             rows = await cursor.fetchall()
-            return [Review(**dict(row)) for row in rows]
+            return [self._row_to_review(row) for row in rows]
 
     @db_retry()
     async def get_pending_reviews(self) -> List[Review]:
@@ -87,7 +89,7 @@ class ReviewRepository(BaseRepository):
                 "SELECT * FROM reviews WHERE is_approved = 0 ORDER BY created_at ASC"
             )
             rows = await cursor.fetchall()
-            return [Review(**dict(row)) for row in rows]
+            return [self._row_to_review(row) for row in rows]
 
     @db_retry()
     async def approve_review(self, review_id: int) -> bool:
