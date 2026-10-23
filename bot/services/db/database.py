@@ -138,6 +138,7 @@ class Database:
         self.use_coupon = self.coupons.use_coupon
         self.get_all_coupons = self.coupons.get_all_coupons
         self.toggle_coupon = self.coupons.toggle_coupon
+        self.get_user_coupons = self.coupons.get_user_coupons  # <-- НОВЫЙ ПРОКСИ
 
         # Дополнительные методы
         self._backup_db = self._backup_db
