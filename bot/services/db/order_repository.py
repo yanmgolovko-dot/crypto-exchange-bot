@@ -44,7 +44,8 @@ class Order:
     user_payment_details: Optional[str] = None
 
 
-_TX_HASH_ALLOWED_STATUSES = {"processing"}
+# РАЗРЕШАЕМ ВВОД ХЕША КАК В ПРОЦЕССИНГЕ, ТАК И В PENDING (для P2P Sell)
+_TX_HASH_ALLOWED_STATUSES = {"processing", "pending"}
 
 
 class OrderRepository(BaseRepository):
@@ -206,8 +207,8 @@ class OrderRepository(BaseRepository):
             await self.conn.execute("""
                 UPDATE exchange_orders 
                 SET tx_hash = ?, admin_checked_by = ?, admin_checked_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status = ?
-            """, (tx_hash, admin_id, order_id, order.status))
+                WHERE id = ?
+            """, (tx_hash, admin_id, order_id))
             await self.conn.commit()
             logger.info(
                 "Хеш сохранён для заявки #%s (валюта=%s, admin=%s)",

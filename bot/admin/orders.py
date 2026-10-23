@@ -705,8 +705,17 @@ async def admin_approve_order(
             f"✅ <b>Заявка #{order.public_order_number or order.id} успешно завершена!</b>\n\n"
             f"Криптовалюта получена. Рубли в размере <b>{order.amount_rub:,.0f} ₽</b> "
             f"отправлены на ваши реквизиты: <code>{html.escape(order.user_payment_details or '')}</code>.\n\n"
-            f"Спасибо за обмен!"
         )
+        
+        # Добавляем хеш и ссылку в сообщение клиенту
+        if order.tx_hash:
+            user_text += f"🔗 Хеш вашей транзакции:\n<code>{html.escape(order.tx_hash)}</code>\n"
+            explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
+            if explorer_url:
+                user_text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n\n"
+                
+        user_text += "Спасибо за обмен!"
+
         try:
             await bot.send_message(order.user_id, user_text, parse_mode="HTML")
         except Exception as e:
