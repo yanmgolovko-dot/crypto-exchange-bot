@@ -3,7 +3,7 @@
 
 import logging
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -14,6 +14,7 @@ from bot.services.partner_service import partner_service
 from bot.keyboards import main_menu_keyboard
 from bot.config.settings import config
 from bot.utils.helpers import safe_edit_message, escape_html
+from bot.utils.qr_generator import generate_qr_bytes
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -37,23 +38,15 @@ def partner_keyboard():
 
 
 async def partner_entry(user_id: int, bot: Bot):
-    logger.info(f"partner_entry: вход для пользователя {user_id}")
-
     partner = await db.partners.get_partner(user_id)
-    logger.info(f"partner_entry: результат get_partner = {partner}")
-
     if not partner or not partner.is_active:
-        logger.warning(f"partner_entry: доступ запрещён для {user_id}, partner={partner}")
         await bot.send_message(user_id, "⛔ У вас нет доступа к партнёрскому кабинету.")
         return
-
-    logger.info(f"partner_entry: доступ разрешён, отправляем клавиатуру")
     await bot.send_message(
         user_id,
         "🤝 Добро пожаловать в партнёрский кабинет!",
         reply_markup=partner_keyboard()
     )
-    logger.info(f"partner_entry: сообщение отправлено")
 
 
 @router.message(Command("partner"))
@@ -68,7 +61,6 @@ async def partner_stats(callback: CallbackQuery):
     if not partner:
         await callback.answer("⛔ Доступ запрещён", show_alert=True)
         return
-
     stats = await partner_service.get_partner_stats(user_id)
     if not stats:
         await callback.answer("Ошибка загрузки статистики", show_alert=True)
@@ -87,6 +79,8 @@ async def partner_stats(callback: CallbackQuery):
     await callback.answer()
 
 
+# ==================== РЕФЕРАЛЬНАЯ ССЫЛКА + QR ====================
+
 @router.callback_query(F.data == "partner_link")
 async def partner_link(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -103,14 +97,43 @@ async def partner_link(callback: CallbackQuery):
     bot_info = await callback.bot.get_me()
     code = user.referral_code or f"REF{user.user_id}"
     link = f"https://t.me/{bot_info.username}?start={code}"
-    text = (
-        f"🔗 <b>Ваша реферальная ссылка:</b>\n"
-        f"<code>{escape_html(link)}</code>\n\n"
-        f"Отправляйте её друзьям. Когда они совершат первый обмен, вы получите бонус!"
+
+    caption = (
+        f"🔗 <b>Ваша партнёрская ссылка</b>\n\n"
+        f"<b>Код:</b> <code>{escape_html(code)}</code>\n"
+        f"<b>Ссылка:</b>\n<code>{escape_html(link)}</code>\n\n"
+        f"📲 Покажите QR-код — новый партнёр попадёт к вам в структуру."
     )
+
     kb = InlineKeyboardBuilder()
+    kb.button(
+        text="📤 Поделиться",
+        url=f"https://t.me/share/url?url={link}&text=Крипто-обменник с лучшими курсами!"
+    )
     kb.button(text="🔙 Назад", callback_data="partner_back")
-    await safe_edit_message(callback.message, text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    kb.adjust(1)
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    qr_buf = generate_qr_bytes(link)
+    if qr_buf:
+        photo = BufferedInputFile(qr_buf.read(), filename=f"partner_{user.user_id}.png")
+        await callback.message.answer_photo(
+            photo=photo,
+            caption=caption,
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML",
+        )
+    else:
+        await callback.message.answer(
+            caption,
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     await callback.answer()
 
 
@@ -172,7 +195,6 @@ async def withdraw_details_received(message: Message, state: FSMContext):
     data = await state.get_data()
     amount = data['amount']
     method = data['method']
-
     user_id = message.from_user.id
     success, msg, request_id = await partner_service.request_withdraw(
         user_id, amount, method, details

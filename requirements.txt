@@ -10,3 +10,4 @@ Brotli==1.1.0
 cryptography==42.0.5
 cachetools==5.3.3
 bitcoinlib==0.6.14
+qrcode[pil]==7.4.2

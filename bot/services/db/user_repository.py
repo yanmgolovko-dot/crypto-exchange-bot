@@ -2,6 +2,9 @@
 """Репозиторий для работы с пользователями."""
 
 import logging
+import random
+import string
+import secrets
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,23 +37,79 @@ class User:
     fake_total_exchanges: int = 0
 
 
+def _generate_ref_code(first_name: Optional[str] = None) -> str:
+    """
+    Генерирует читаемый реф. код:
+      - если есть имя → берём до 5 латинских букв из имени + случайный суффикс;
+      - иначе → USR + случайный суффикс.
+    Примеры: ILYA7X, MIKE23, USR4KF, ANNAB2.
+    """
+    prefix = ""
+    if first_name:
+        cleaned = "".join(
+            c for c in first_name.upper() if c.isascii() and c.isalpha()
+        )
+        prefix = cleaned[:5]
+
+    if len(prefix) < 2:
+        prefix = "USR"
+
+    total_len = random.choice([6, 7, 8])
+    suffix_len = max(2, total_len - len(prefix))
+    alphabet = string.ascii_uppercase + string.digits
+    suffix = "".join(random.choices(alphabet, k=suffix_len))
+    return f"{prefix}{suffix}"
+
+
 class UserRepository(BaseRepository):
 
     @db_retry()
     async def add_or_update_user(self, user_id: int, username: str = None,
                                   first_name: str = None, last_name: str = None) -> bool:
+        """
+        Добавляет нового пользователя (с автогенерацией красивого реф. кода)
+        или обновляет данные существующего (НЕ трогая реф. код).
+        """
         logger.info(f"[{user_id}] Добавление/обновление пользователя")
         async with self.lock:
-            referral_code = f"REF{user_id}"
-            await self.conn.execute("""
-                INSERT INTO users (user_id, username, first_name, last_name, referral_code, last_activity)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    username = excluded.username,
-                    first_name = excluded.first_name,
-                    last_name = excluded.last_name,
-                    last_activity = CURRENT_TIMESTAMP
-            """, (user_id, username, first_name, last_name, referral_code))
+            cursor = await self.conn.execute(
+                "SELECT referral_code FROM users WHERE user_id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+
+            if row:
+                # Пользователь существует — обновляем только личные данные
+                await self.conn.execute("""
+                    UPDATE users SET 
+                        username = ?, 
+                        first_name = ?, 
+                        last_name = ?,
+                        last_activity = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                """, (username, first_name, last_name, user_id))
+            else:
+                # Новый пользователь — генерируем уникальный реф. код
+                referral_code = None
+                for _ in range(10):
+                    candidate = _generate_ref_code(first_name)
+                    check = await self.conn.execute(
+                        "SELECT 1 FROM users WHERE referral_code = ?", (candidate,)
+                    )
+                    if not await check.fetchone():
+                        referral_code = candidate
+                        break
+
+                if not referral_code:
+                    # Fallback: криптостойкий рандом, шанс коллизии ~0
+                    referral_code = secrets.token_hex(4).upper()
+
+                await self.conn.execute("""
+                    INSERT INTO users 
+                        (user_id, username, first_name, last_name, referral_code, last_activity)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (user_id, username, first_name, last_name, referral_code))
+                logger.info(f"[{user_id}] Новый пользователь, реф. код: {referral_code}")
+
             await self.conn.commit()
             return True
 
@@ -66,7 +125,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_user(self, user_id: int) -> Optional[User]:
-        logger.debug(f"Запрос пользователя {user_id}")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
             cursor = await self.conn.execute(
@@ -79,7 +137,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_user_by_username(self, username: str) -> Optional[User]:
-        """Поиск пользователя по username (без @, регистронезависимо)."""
         clean = (username or "").lstrip("@").lower()
         if not clean:
             return None
@@ -95,7 +152,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_user_by_referral_code(self, code: str) -> Optional[User]:
-        """Поиск пользователя по реферальному коду (точное совпадение)."""
         if not code:
             return None
         async with self.lock:
@@ -110,7 +166,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def set_user_referral_code(self, user_id: int, code: str) -> bool:
-        """Устанавливает реферальный код пользователя."""
         logger.info(f"Установка реф. кода '{code}' для пользователя {user_id}")
         async with self.lock:
             await self.conn.execute(
@@ -122,7 +177,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_all_users(self) -> List[User]:
-        logger.debug("Запрос всех пользователей")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
             cursor = await self.conn.execute("SELECT * FROM users ORDER BY user_id")
@@ -131,7 +185,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def ban_user(self, user_id: int, reason: str, banned_by: int) -> bool:
-        logger.info(f"Бан пользователя {user_id} администратором {banned_by}, причина: {reason}")
         async with self.lock:
             await self.conn.execute("""
                 UPDATE users SET 
@@ -146,7 +199,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def unban_user(self, user_id: int) -> bool:
-        logger.info(f"Снятие бана с пользователя {user_id}")
         async with self.lock:
             await self.conn.execute("""
                 UPDATE users SET 
@@ -168,7 +220,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_user_stats(self, user_id: int) -> Dict[str, Any]:
-        logger.debug(f"Запрос статистики для пользователя {user_id}")
         async with self.lock:
             cursor = await self.conn.execute(
                 "SELECT COUNT(*) FROM exchange_orders WHERE user_id = ?", (user_id,)
@@ -202,7 +253,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def set_user_notifications(self, user_id: int, enabled: bool) -> bool:
-        logger.info(f"[{user_id}] Установка уведомлений: {enabled}")
         async with self.lock:
             await self.conn.execute(
                 "UPDATE users SET notifications_enabled = ? WHERE user_id = ?",
@@ -214,7 +264,6 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def add_referral_earning(self, referrer_id: int, referred_id: int,
                                     order_id: int, amount: float, percent: float) -> int:
-        logger.info(f"Добавление реферального заработка: реферер {referrer_id}, реферал {referred_id}, заказ {order_id}, сумма {amount}, процент {percent}")
         async with self.lock:
             cursor = await self.conn.execute("""
                 INSERT INTO referral_earnings (referrer_id, referred_id, order_id, amount, percent)
@@ -225,7 +274,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def get_referral_earnings(self, user_id: int) -> List[Dict]:
-        logger.debug(f"Запрос реферальных начислений для пользователя {user_id}")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
             cursor = await self.conn.execute("""
@@ -262,7 +310,6 @@ class UserRepository(BaseRepository):
 
     @db_retry()
     async def create_session(self, user_id: int) -> int:
-        logger.debug(f"Создание сессии для пользователя {user_id}")
         async with self.lock:
             cursor = await self.conn.execute("""
                 INSERT INTO user_sessions (user_id, started_at, last_activity)
@@ -275,9 +322,7 @@ class UserRepository(BaseRepository):
     async def update_session_activity(self, session_id: int) -> bool:
         async with self.lock:
             await self.conn.execute("""
-                UPDATE user_sessions 
-                SET last_activity = CURRENT_TIMESTAMP 
-                WHERE id = ?
+                UPDATE user_sessions SET last_activity = CURRENT_TIMESTAMP WHERE id = ?
             """, (session_id,))
             await self.conn.commit()
             return True

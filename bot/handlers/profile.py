@@ -4,7 +4,7 @@
 import logging
 from datetime import datetime
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -17,6 +17,7 @@ from bot.services.partner_service import partner_service
 from bot.keyboards import main_menu_keyboard
 from bot.admin.main import is_admin
 from bot.utils.helpers import safe_edit_message, escape_html
+from bot.utils.qr_generator import generate_qr_bytes
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -58,10 +59,6 @@ async def get_user_profile_keyboard(user_id: int):
 
 
 def _build_referral_link(bot_username: str, user) -> str:
-    """
-    Генерирует реф. ссылку на основе user.referral_code.
-    Если кода нет (старый пользователь) — fallback на REF{user_id}.
-    """
     code = getattr(user, "referral_code", None) or f"REF{user.user_id}"
     return f"https://t.me/{bot_username}?start={code}"
 
@@ -70,11 +67,8 @@ def _build_referral_link(bot_username: str, user) -> str:
 @router.message(F.text == "👤 Личный кабинет")
 async def cmd_profile(message: Message):
     user_id = message.from_user.id
-    logger.info(f"[{user_id}] Открыт личный кабинет")
-
     user = await db.get_user(user_id)
     if not user:
-        logger.info(f"[{user_id}] Пользователь не найден в БД, создаём запись")
         await db.add_or_update_user(
             user_id=user_id,
             username=message.from_user.username,
@@ -85,7 +79,6 @@ async def cmd_profile(message: Message):
 
     is_banned, ban_reason = await db.is_user_banned(user_id)
     if is_banned:
-        logger.warning(f"[{user_id}] Попытка доступа забаненным пользователем")
         await message.answer(
             f"🚫 <b>Ваш аккаунт заблокирован</b>\n\n"
             f"Причина: {ban_reason}\n\n"
@@ -95,7 +88,6 @@ async def cmd_profile(message: Message):
         return
 
     stats = await db.get_user_stats(user_id)
-    prices = await crypto_api.get_all_prices()
 
     text = (
         f"👤 <b>Личный кабинет</b>\n\n"
@@ -118,7 +110,6 @@ async def cmd_profile(message: Message):
 
     kb = await get_user_profile_keyboard(user_id)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
-    logger.debug(f"[{user_id}] Информация профиля отправлена")
 
 
 @router.callback_query(F.data == "user_orders")
@@ -131,16 +122,11 @@ async def user_orders(callback: CallbackQuery):
         text = "📋 <b>Ваши заявки</b>\n\n"
         for order in orders:
             status_emoji = {
-                "pending": "⏳",
-                "paid": "💳",
-                "completed": "✅",
-                "cancelled": "❌"
+                "pending": "⏳", "paid": "💳", "completed": "✅", "cancelled": "❌"
             }.get(order.status, "❓")
             status_text = {
-                "pending": "Ожидает",
-                "paid": "Проверка",
-                "completed": "Выполнена",
-                "cancelled": "Отменена"
+                "pending": "Ожидает", "paid": "Проверка",
+                "completed": "Выполнена", "cancelled": "Отменена"
             }.get(order.status, "Неизв.")
             display_number = order.public_order_number or order.id
             text += (
@@ -158,19 +144,10 @@ async def user_orders(callback: CallbackQuery):
 @router.callback_query(F.data == "user_partner_cabinet")
 async def user_partner_cabinet(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    logger.info(f"[{user_id}] Нажата кнопка партнёрского кабинета")
-
     partner = await db.partners.get_partner(user_id)
-    if not partner:
-        logger.warning(f"Партнёрская запись отсутствует для {user_id}")
+    if not partner or not partner.is_active:
         await callback.answer("⛔ У вас нет доступа к партнёрскому кабинету.", show_alert=True)
         return
-
-    if not partner.is_active:
-        logger.warning(f"Партнёрская запись неактивна для {user_id}")
-        await callback.answer("⛔ Ваш партнёрский аккаунт неактивен.", show_alert=True)
-        return
-
     from bot.handlers.partner import partner_entry
     await partner_entry(callback.from_user.id, callback.bot)
     await callback.answer()
@@ -181,7 +158,6 @@ async def user_admin_panel(callback: CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет доступа к админ-панели.", show_alert=True)
         return
-
     from bot.admin.main import cmd_admin
     await cmd_admin(callback.message, state)
     await callback.answer()
@@ -200,7 +176,6 @@ async def user_stats(callback: CallbackQuery):
         f"   Общий объем: {stats['total_volume']:,.0f} ₽\n"
         f"   Сэкономлено на скидках: {stats['total_saved']:,.0f} ₽\n\n"
     )
-
     if orders:
         text += "<b>Последние заявки:</b>\n"
         for order in orders:
@@ -217,7 +192,6 @@ async def user_stats(callback: CallbackQuery):
                 f"   Статус: {status_text}\n"
                 f"   Дата: {order.created_at[:10] if order.created_at else 'N/A'}\n\n"
             )
-
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
@@ -231,7 +205,6 @@ async def user_bonus(callback: CallbackQuery):
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
-
     text = (
         f"💰 <b>Бонусный баланс</b>\n\n"
         f"Текущий баланс: <b>{user.bonus_balance:,.0f} ₽</b>\n\n"
@@ -242,7 +215,6 @@ async def user_bonus(callback: CallbackQuery):
         f"<b>Как использовать?</b>\n"
         f"Бонусы автоматически применяются при обмене и уменьшают комиссию."
     )
-
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔗 Реферальная программа", callback_data="user_referral")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
@@ -258,9 +230,7 @@ async def user_promos(callback: CallbackQuery):
         all_promos = await db.get_all_promo_codes()
         used_promo_ids = set(await db.get_user_used_promo_ids(user_id))
         now = datetime.now().isoformat()
-        available = []
-        used = []
-
+        available, used = [], []
         for promo in all_promos:
             if not promo.is_active:
                 continue
@@ -278,18 +248,15 @@ async def user_promos(callback: CallbackQuery):
                 text += f"• <code>{escape_html(promo.code)}</code> — скидка {promo.discount_percent}% (осталось {promo.max_uses - promo.used_count} шт.)\n"
         else:
             text += "У вас нет доступных промокодов.\n"
-
         if used:
             text += "\n<b>Использованные:</b>\n"
             for promo in used:
                 text += f"• {escape_html(promo.code)} — скидка {promo.discount_percent}%\n"
-
         if not available and not used:
             text = "🎁 <b>Мои промокоды</b>\n\nУ вас пока нет промокодов. Следите за акциями!"
     except Exception as e:
         logger.error(f"[{user_id}] Ошибка при получении промокодов: {e}", exc_info=True)
         text = "❌ Произошла ошибка при загрузке промокодов."
-
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
@@ -300,27 +267,20 @@ async def user_promos(callback: CallbackQuery):
 async def user_my_coupons(callback: CallbackQuery):
     user_id = callback.from_user.id
     coupons = await coupon_service.get_user_coupons(user_id)
-
     if not coupons:
         text = "🎫 <b>Мои купоны</b>\n\nУ вас пока нет доступных купонов."
     else:
         text = "🎫 <b>Мои купоны</b>\n\n"
         for coup in coupons:
-            if coup.discount_type == 'percent':
-                discount_str = f"{coup.discount_value}%"
-            else:
-                discount_str = f"{coup.discount_value:,.0f} ₽"
+            discount_str = f"{coup.discount_value}%" if coup.discount_type == 'percent' else f"{coup.discount_value:,.0f} ₽"
             on_str = "на всю сумму" if coup.discount_on == 'order' else "на комиссию"
-            valid_str = "бессрочно"
-            if coup.valid_to:
-                valid_str = f"до {coup.valid_to[:10]}"
+            valid_str = "бессрочно" if not coup.valid_to else f"до {coup.valid_to[:10]}"
             text += (
                 f"• <b>{escape_html(coup.code)}</b>\n"
                 f"  Скидка: {discount_str} {on_str}\n"
                 f"  {escape_html(coup.description or '—')}\n"
                 f"  Действует: {valid_str}\n\n"
             )
-
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
@@ -343,12 +303,13 @@ async def user_my_reviews(callback: CallbackQuery):
             if rev.admin_reply:
                 text += f"<i>Ответ: {escape_html(rev.admin_reply)}</i>\n"
             text += f"—— {rev.created_at[:10]}\n\n"
-
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
+
+# ==================== РЕФЕРАЛЫ + QR ====================
 
 @router.callback_query(F.data == "user_referral")
 async def user_referral(callback: CallbackQuery):
@@ -360,21 +321,47 @@ async def user_referral(callback: CallbackQuery):
 
     bot_info = await callback.bot.get_me()
     referral_link = _build_referral_link(bot_info.username, user)
+    ref_code = user.referral_code or f"REF{user.user_id}"
 
-    text = (
-        f"🔗 <b>Реферальная программа</b>\n\n"
-        f"Приглашайте друзей и получайте <b>1%</b> от каждого их обмена!\n\n"
-        f"<b>Ваша реферальная ссылка:</b>\n"
-        f"<code>{escape_html(referral_link)}</code>\n\n"
-        f"<b>Ваш реферальный код:</b> <code>{escape_html(user.referral_code or '')}</code>\n\n"
-        f"Поделитесь ссылкой с друзьями, и когда они совершат обмен, вы автоматически получите бонус."
+    caption = (
+        f"🔗 <b>Ваша реферальная ссылка</b>\n\n"
+        f"<b>Код:</b> <code>{escape_html(ref_code)}</code>\n"
+        f"<b>Ссылка:</b>\n<code>{escape_html(referral_link)}</code>\n\n"
+        f"📲 Покажите QR-код другу — он сразу попадёт в бота как ваш реферал.\n\n"
+        f"💰 Получайте <b>1%</b> с каждого обмена приглашённых."
     )
 
-    keyboard = InlineKeyboardBuilder()
-    keyboard.button(text="📤 Поделиться", url=f"https://t.me/share/url?url={referral_link}&text=Крипто-обменник с лучшими курсами!")
-    keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
-    keyboard.adjust(1)
-    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML", disable_web_page_preview=True)
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="📤 Поделиться",
+        url=f"https://t.me/share/url?url={referral_link}&text=Крипто-обменник с лучшими курсами!"
+    )
+    kb.button(text="🔙 Назад", callback_data="user_back_profile")
+    kb.adjust(1)
+
+    # Пытаемся удалить старое сообщение (если callback пришёл из текстового меню)
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    qr_buf = generate_qr_bytes(referral_link)
+    if qr_buf:
+        photo = BufferedInputFile(qr_buf.read(), filename=f"ref_{user.user_id}.png")
+        await callback.message.answer_photo(
+            photo=photo,
+            caption=caption,
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML",
+        )
+    else:
+        # Fallback: если QR-библиотека недоступна
+        await callback.message.answer(
+            caption,
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     await callback.answer()
 
 
@@ -385,14 +372,12 @@ async def user_settings(callback: CallbackQuery):
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
-
     text = (
         f"⚙️ <b>Настройки</b>\n\n"
         f"<b>Уведомления:</b> {'✅ Включены' if user.notifications_enabled else '❌ Отключены'}\n"
         f"<b>Язык:</b> {escape_html(user.language or 'ru')}\n\n"
         f"Выберите настройку для изменения:"
     )
-
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🔔 Уведомления", callback_data="user_toggle_notifications")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
@@ -408,10 +393,8 @@ async def user_toggle_notifications(callback: CallbackQuery):
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
-
     new_value = not user.notifications_enabled
     await db.set_user_notifications(user_id, new_value)
-
     status = "включены" if new_value else "отключены"
     await callback.answer(f"Уведомления {status}", show_alert=True)
     await user_settings(callback)
