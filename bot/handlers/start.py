@@ -148,17 +148,4 @@ async def exchange_sell_start(message: Message):
         parse_mode="HTML"
     )
 
-# Заглушка для будущего функционала
-@router.callback_query(F.data.startswith("exch_"))
-async def exchange_placeholder(callback: CallbackQuery):
-    """Временная заглушка для кнопок обмена."""
-    action = callback.data.split("_")[1]
-    coin = callback.data.split("_")[2]
-    
-    action_text = "покупки" if action == "buy" else "продажи"
-    await callback.message.edit_text(
-        f"🛠 Функционал {action_text} <b>{coin}</b> в разработке.\n"
-        f"Скоро здесь появится полноценный обмен через биржу!",
-        parse_mode="HTML"
-    )
-    await callback.answer()
+# ВАЖНО: Заглушка в самом низу удалена! Теперь кнопки exch_ будет обрабатывать файл p2p.py

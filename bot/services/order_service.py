@@ -14,12 +14,6 @@ logger = logging.getLogger(__name__)
 class OrderService:
     """
     Сервис для расчёта и создания заявок.
-    Комиссия рассчитывается как максимум между:
-    - фиксированной минимальной комиссией (9 USD для BTC, 4.5 USD для LTC)
-    - процентом от суммы обмена (процент задаётся в настройках EXCHANGE_FEE)
-    Применяется скидка по промокоду (уменьшает итоговую комиссию).
-    Может применяться купон (скидка на комиссию или на всю сумму заказа).
-    Итоговая сумма к оплате округляется до 100 ₽ вверх.
     """
 
     MIN_FEE_USD = {
@@ -138,12 +132,13 @@ class OrderService:
         crypto_address: str,
         promo_code: Optional[str] = None,
         discount_percent: float = 0,
-        coupon_id: Optional[int] = None
+        coupon_id: Optional[int] = None,
+        order_type: str = 'shop',
+        network: Optional[str] = None,
+        user_payment_details: Optional[str] = None
     ) -> int:
-        logger.info(f"Создание заявки для пользователя {user_id}, {crypto_type}, сумма {amount_rub} ₽")
+        logger.info(f"Создание заявки ({order_type}) для пользователя {user_id}, {crypto_type}, сумма {amount_rub} ₽")
 
-        # 0, "" и None → None. Иначе SQLite проверит FOREIGN KEY
-        # на несуществующую запись coupons.id = 0 и упадёт с IntegrityError.
         if not coupon_id:
             coupon_id = None
 
@@ -159,7 +154,10 @@ class OrderService:
                 crypto_address=crypto_address,
                 promo_code=promo_code,
                 discount_percent=discount_percent,
-                coupon_id=coupon_id
+                coupon_id=coupon_id,
+                order_type=order_type,
+                network=network,
+                user_payment_details=user_payment_details
             )
             logger.info(f"Заявка #{order_id} создана в БД")
             if promo_code:

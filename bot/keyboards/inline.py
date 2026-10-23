@@ -6,6 +6,16 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+def exchange_input_currency_keyboard(action: str, coin: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора валюты ввода (рубли или крипта) для P2P"""
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🇷🇺 В рублях", callback_data=f"exch_input_{action}_{coin}_rub")
+    keyboard.button(text=f"🪙 В {coin}", callback_data=f"exch_input_{action}_{coin}_crypto")
+    keyboard.button(text="🔙 Отмена", callback_data="mode_exchange")
+    keyboard.adjust(2, 1)
+    return keyboard.as_markup()
+
+
 def exchange_crypto_select_keyboard(action: str) -> InlineKeyboardMarkup:
     """Клавиатура выбора монеты для Обмена (Buy/Sell)"""
     keyboard = InlineKeyboardBuilder()
@@ -29,7 +39,7 @@ def crypto_select_keyboard() -> InlineKeyboardMarkup:
 
 
 def currency_choice_keyboard(crypto_type: str) -> InlineKeyboardMarkup:
-    """Клавиатура выбора валюты ввода (рубли/крипта)"""
+    """Клавиатура выбора валюты ввода (рубли/крипта) для Шопа"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🇷🇺 В рублях", callback_data=f"currency_rub_{crypto_type}")
     keyboard.button(text="₿ В крипте", callback_data=f"currency_crypto_{crypto_type}")
@@ -52,18 +62,14 @@ def amount_select_keyboard(crypto_type: str, amounts: List[int]) -> InlineKeyboa
     keyboard.adjust(*rows)
     return keyboard.as_markup()
 
-
 def confirm_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура подтверждения создания заявки"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="✅ Подтвердить", callback_data=f"confirm_order_{order_id}")
     keyboard.button(text="❌ Отменить", callback_data=f"cancel_order_{order_id}")
     keyboard.adjust(2)
     return keyboard.as_markup()
 
-
 def admin_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Полная клавиатура для админа"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="✅ Подтвердить оплату", callback_data=f"admin_approve_{order_id}")
     keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order_id}")
@@ -73,27 +79,21 @@ def admin_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
     keyboard.adjust(2, 2, 1)
     return keyboard.as_markup()
 
-
 def manual_pending_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура для администратора (ручной режим)"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="💳 Ввести реквизиты", callback_data=f"admin_enter_payment_details_{order_id}")
     keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order_id}")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-
 def auto_pending_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура для администратора (авто режим)"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📎 Запросить чек", callback_data=f"admin_request_receipt_{order_id}")
     keyboard.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order_id}")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-
 def receipt_received_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура для администратора при получении чека"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="✅ Подтвердить оплату", callback_data=f"admin_approve_{order_id}")
     keyboard.button(text="❌ Отклонить", callback_data=f"admin_reject_{order_id}")
@@ -101,25 +101,19 @@ def receipt_received_keyboard(order_id: int) -> InlineKeyboardMarkup:
     keyboard.adjust(2, 1)
     return keyboard.as_markup()
 
-
 def receipt_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура для пользователя (кнопка загрузки чека)"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📎 Прикрепить чек", callback_data=f"upload_receipt_{order_id}")
     keyboard.button(text="❌ Отменить заявку", callback_data=f"cancel_order_{order_id}")
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-
 def order_info_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура с кнопкой отмены для информации о заявке"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="❌ Отменить заявку", callback_data=f"cancel_order_{order_id}")
     return keyboard.as_markup()
 
-
 def help_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура раздела помощи"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📝 Как купить", callback_data="help_how_to_buy")
     keyboard.button(text="⏱ Время обработки", callback_data="help_processing_time")
@@ -128,9 +122,7 @@ def help_keyboard() -> InlineKeyboardMarkup:
     keyboard.adjust(1)
     return keyboard.as_markup()
 
-
 def cancel_creation_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура с кнопкой отмены создания заявки"""
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="❌ Отменить", callback_data="cancel_order_creation")
     return keyboard.as_markup()

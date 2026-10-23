@@ -5,6 +5,7 @@ import logging
 import os
 import html
 import asyncio
+from typing import Optional
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -29,9 +30,25 @@ router = Router()
 def _tx_hash_hint(crypto_type: str) -> str:
     """Возвращает подсказку по формату хеша для конкретной валюты."""
     cur = (crypto_type or "").upper()
-    if cur in {"BTC", "LTC", "BCH", "DOGE", "DASH"}:
+    if cur in {"BTC", "LTC", "USDT", "TRX", "BCH", "DOGE", "DASH"}:
         return f"{cur} — ровно 64 hex-символа"
     return f"{cur} — минимум 32 hex-символа"
+
+
+def get_explorer_url(crypto_type: str, tx_hash: str) -> Optional[str]:
+    """Генерирует ссылку на блокчейн-эксплорер в зависимости от валюты."""
+    if not tx_hash or tx_hash == 'N/A':
+        return None
+        
+    cur = (crypto_type or "").upper()
+    if cur == 'BTC':
+        return f"https://live.blockcypher.com/btc/tx/{tx_hash}/"
+    elif cur == 'LTC':
+        return f"https://live.blockcypher.com/ltc/tx/{tx_hash}/"
+    elif cur in ['USDT', 'TRX']:
+        return f"https://tronscan.org/#/transaction/{tx_hash}"
+    
+    return None
 
 
 @router.callback_query(F.data == "admin_orders_menu")
@@ -259,9 +276,14 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
         f"Курс: {order.rate:,.0f} ₽\n"
         f"Комиссия: {order.fee_percent}%\n"
         f"Статус: {order.status}\n"
+        f"Тип заявки: {order.order_type or 'shop'}\n"
         f"Создана: {order.created_at}\n"
         f"Кошелёк: <code>{safe_address}</code>\n"
     )
+    if order.network:
+        text += f"Сеть: {order.network}\n"
+    if order.user_payment_details:
+        text += f"Реквизиты клиента: <code>{html.escape(order.user_payment_details)}</code>\n"
     if order.paid_at:
         text += f"Оплачена: {order.paid_at}\n"
     if order.completed_at:
@@ -364,9 +386,14 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
         f"Курс: {order.rate:,.0f} ₽\n"
         f"Комиссия: {order.fee_percent}%\n"
         f"Статус: {order.status}\n"
+        f"Тип заявки: {order.order_type or 'shop'}\n"
         f"Создана: {order.created_at}\n"
         f"Кошелёк: <code>{safe_address}</code>\n"
     )
+    if order.network:
+        text += f"Сеть: {order.network}\n"
+    if order.user_payment_details:
+        text += f"Реквизиты клиента: <code>{html.escape(order.user_payment_details)}</code>\n"
     if order.paid_at:
         text += f"Оплачена: {order.paid_at}\n"
     if order.completed_at:
@@ -425,9 +452,13 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
         f"Сумма: {order.amount_rub:,.0f} ₽\n"
         f"Крипта: {order.amount_crypto:.8f} {order.crypto_type}\n"
         f"Кошелек: <code>{safe_address}</code>\n"
-        f"Время оплаты: {order.paid_at}\n\n"
-        f"Проверьте поступление средств и подтвердите заявку."
     )
+    if order.network:
+        text += f"Сеть: {order.network}\n"
+    if order.user_payment_details:
+        text += f"Реквизиты клиента: <code>{html.escape(order.user_payment_details)}</code>\n"
+    
+    text += f"Время оплаты: {order.paid_at}\n\nПроверьте поступление средств и подтвердите заявку."
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="✅ Оплата получена", callback_data=f"admin_approve_{order.id}")
@@ -576,11 +607,7 @@ async def admin_approve_order(
         # Выдаём купоны за активность
         await coupon_service.check_and_give_activity_coupons(order.user_id)
 
-        explorer_url = None
-        if order.crypto_type == 'LTC':
-            explorer_url = f"https://live.blockcypher.com/ltc/tx/{tx_hash}/" if tx_hash != 'N/A' else None
-        elif order.crypto_type == 'BTC':
-            explorer_url = f"https://live.blockcypher.com/btc/tx/{tx_hash}/" if tx_hash != 'N/A' else None
+        explorer_url = get_explorer_url(order.crypto_type, tx_hash)
 
         user_text = (
             f"✅ <b>Заявка #{order_id} выполнена!</b>\n\n"
@@ -794,11 +821,7 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
 
     logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, хеш {tx_hash} сохранён")
 
-    explorer_url = None
-    if order.crypto_type == 'LTC':
-        explorer_url = f"https://live.blockcypher.com/ltc/tx/{tx_hash}/"
-    elif order.crypto_type == 'BTC':
-        explorer_url = f"https://live.blockcypher.com/btc/tx/{tx_hash}/"
+    explorer_url = get_explorer_url(order.crypto_type, tx_hash)
 
     user_text = (
         f"✅ <b>Криптовалюта по заявке #{order_id} отправлена!</b>\n\n"

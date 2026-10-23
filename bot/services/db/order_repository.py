@@ -39,17 +39,17 @@ class Order:
     last_reminder_at: Optional[str] = None
     coupon_id: Optional[int] = None
     public_order_number: Optional[int] = None
+    order_type: Optional[str] = 'shop'
+    network: Optional[str] = None
+    user_payment_details: Optional[str] = None
 
 
-# Статусы, в которых разрешён ввод/обновление tx-хеша
 _TX_HASH_ALLOWED_STATUSES = {"processing"}
 
 
 class OrderRepository(BaseRepository):
     """
     Репозиторий для работы с таблицей exchange_orders.
-    Содержит методы для создания, получения, обновления заявок,
-    а также для работы с напоминаниями.
     """
 
     @db_retry()
@@ -57,11 +57,18 @@ class OrderRepository(BaseRepository):
                            amount_rub: float, amount_crypto: float, rate: float,
                            fee_percent: float, crypto_address: str,
                            promo_code: str = None, discount_percent: float = 0,
-                           coupon_id: Optional[int] = None) -> int:
+                           coupon_id: Optional[int] = None,
+                           order_type: str = 'shop',
+                           network: Optional[str] = None,
+                           user_payment_details: Optional[str] = None) -> int:
         """
         Создаёт новую заявку со статусом 'pending' и присваивает публичный номер из счётчика.
         """
-        logger.debug(f"Создание заявки для user_id={user_id}, crypto={crypto_type}, сумма={amount_rub}")
+        logger.debug(f"Создание заявки для user_id={user_id}, crypto={crypto_type}, сумма={amount_rub}, type={order_type}")
+        
+        if not coupon_id:
+            coupon_id = None
+
         async with self.lock:
             # Получаем следующий публичный номер
             cursor = await self.conn.execute(
@@ -71,14 +78,12 @@ class OrderRepository(BaseRepository):
             if row:
                 public_number = int(row[0])
                 logger.info(f"Текущий счётчик next_order_number = {public_number}")
-                # Увеличиваем счётчик
                 await self.conn.execute(
                     "UPDATE system_settings SET value = ? WHERE key = 'next_order_number'",
                     (str(public_number + 1),)
                 )
                 logger.info(f"Счётчик увеличен до {public_number + 1}")
             else:
-                # Если счётчика нет, начинаем с 1 и создаём запись
                 public_number = 1
                 await self.conn.execute(
                     "INSERT INTO system_settings (key, value) VALUES ('next_order_number', ?)",
@@ -91,20 +96,20 @@ class OrderRepository(BaseRepository):
                 INSERT INTO exchange_orders 
                 (user_id, username, crypto_type, amount_rub, amount_crypto, rate, 
                  fee_percent, crypto_address, status, promo_code, discount_percent, 
-                 reminder_count, coupon_id, public_order_number)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, ?)
+                 reminder_count, coupon_id, public_order_number, order_type, network, user_payment_details)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, ?, ?, ?, ?)
                 RETURNING id
             """, (user_id, username, crypto_type, amount_rub, amount_crypto, 
-                  rate, fee_percent, crypto_address, promo_code, discount_percent, coupon_id, public_number))
+                  rate, fee_percent, crypto_address, promo_code, discount_percent, 
+                  coupon_id, public_number, order_type, network, user_payment_details))
             row = await cursor.fetchone()
             order_id = row[0]
             await self.conn.commit()
-            logger.info(f"Заявка #{order_id} создана в БД, публичный номер: {public_number}")
+            logger.info(f"Заявка #{order_id} создана в БД, публичный номер: {public_number}, тип: {order_type}")
             return order_id
 
     @db_retry()
     async def get_order(self, order_id: int) -> Optional[Order]:
-        """Получает заявку по ID."""
         logger.debug(f"Запрос заявки #{order_id}")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -113,14 +118,11 @@ class OrderRepository(BaseRepository):
             )
             row = await cursor.fetchone()
             if row:
-                logger.debug(f"Заявка #{order_id} найдена")
                 return Order(**dict(row))
-            logger.debug(f"Заявка #{order_id} не найдена")
             return None
 
     @db_retry()
     async def get_order_by_public_number(self, number: int) -> Optional[Order]:
-        """Находит заявку по публичному номеру."""
         logger.debug(f"Запрос заявки по публичному номеру #{number}")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -137,14 +139,6 @@ class OrderRepository(BaseRepository):
                                    admin_comment: str = None,
                                    admin_id: int = None,
                                    expected_status: Optional[str] = None) -> bool:
-        """
-        Обновляет статус заявки.
-
-        :param expected_status: если задан — апдейт выполняется только при условии,
-            что текущий статус заявки равен expected_status (атомарно, без гонок).
-            При несовпадении возвращает False и ничего не меняет.
-        :return: True, если строка обновлена (или expected_status не задан).
-        """
         logger.info(
             "Обновление статуса заявки #%s на '%s' (expected=%s)",
             order_id, status, expected_status,
@@ -191,16 +185,6 @@ class OrderRepository(BaseRepository):
     async def update_order_tx_hash_checked(
         self, order_id: int, tx_hash: str, admin_id: int
     ) -> Tuple[bool, str]:
-        """
-        Валидирует и сохраняет хеш транзакции.
-
-        Проверки:
-        - заявка существует;
-        - статус заявки в _TX_HASH_ALLOWED_STATUSES (processing);
-        - формат хеша соответствует валюте заявки.
-
-        :return: (ok, message). При ok=True message == "".
-        """
         order = await self.get_order(order_id)
         if order is None:
             return False, f"Заявка #{order_id} не найдена."
@@ -233,11 +217,6 @@ class OrderRepository(BaseRepository):
 
     @db_retry()
     async def update_order_tx_hash(self, order_id: int, tx_hash: str, admin_id: int) -> bool:
-        """
-        Совместимая обёртка над update_order_tx_hash_checked.
-        Возвращает только bool — для старых вызовов.
-        Новый код должен использовать update_order_tx_hash_checked.
-        """
         ok, err = await self.update_order_tx_hash_checked(order_id, tx_hash, admin_id)
         if not ok:
             logger.warning(
@@ -247,7 +226,6 @@ class OrderRepository(BaseRepository):
 
     @db_retry()
     async def add_bank_receipt(self, order_id: int, receipt_path: str) -> bool:
-        """Сохраняет путь к PDF-чеку в заявке."""
         logger.info(f"Добавление чека для заявки #{order_id}: {receipt_path}")
         async with self.lock:
             await self.conn.execute(
@@ -255,12 +233,10 @@ class OrderRepository(BaseRepository):
                 (receipt_path, order_id)
             )
             await self.conn.commit()
-            logger.debug(f"Путь к чеку сохранён")
             return True
 
     @db_retry()
     async def get_user_orders(self, user_id: int, limit: int = 10) -> List[Order]:
-        """Возвращает последние заявки пользователя."""
         logger.debug(f"Запрос последних {limit} заявок пользователя {user_id}")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -271,13 +247,10 @@ class OrderRepository(BaseRepository):
                 LIMIT ?
             """, (user_id, limit))
             rows = await cursor.fetchall()
-            orders = [Order(**dict(row)) for row in rows]
-            logger.debug(f"Найдено {len(orders)} заявок")
-            return orders
+            return [Order(**dict(row)) for row in rows]
 
     @db_retry()
     async def get_pending_orders(self) -> List[Order]:
-        """Возвращает все заявки со статусом 'pending' или 'paid' (ожидающие/на проверке)."""
         logger.debug("Запрос всех ожидающих и оплаченных заявок")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -287,13 +260,10 @@ class OrderRepository(BaseRepository):
                 ORDER BY created_at DESC
             """)
             rows = await cursor.fetchall()
-            orders = [Order(**dict(row)) for row in rows]
-            logger.debug(f"Найдено {len(orders)} заявок со статусом pending/paid")
-            return orders
+            return [Order(**dict(row)) for row in rows]
 
     @db_retry()
     async def get_all_orders(self, limit: int = 50, offset: int = 0) -> List[Order]:
-        """Возвращает последние заявки с пагинацией."""
         logger.debug(f"Запрос всех заявок (limit={limit}, offset={offset})")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -303,13 +273,10 @@ class OrderRepository(BaseRepository):
                 LIMIT ? OFFSET ?
             """, (limit, offset))
             rows = await cursor.fetchall()
-            orders = [Order(**dict(row)) for row in rows]
-            logger.debug(f"Получено {len(orders)} заявок")
-            return orders
+            return [Order(**dict(row)) for row in rows]
 
     @db_retry()
     async def set_order_manual_payment_details(self, order_id: int, details: str) -> bool:
-        """Сохраняет введённые администратором реквизиты для ручного режима."""
         logger.info(f"Сохранение ручных реквизитов для заявки #{order_id}")
         async with self.lock:
             await self.conn.execute("""
@@ -318,16 +285,10 @@ class OrderRepository(BaseRepository):
                 WHERE id = ?
             """, (details, order_id))
             await self.conn.commit()
-            logger.debug(f"Реквизиты сохранены")
             return True
 
-    # ==================== МЕТОДЫ ДЛЯ НАПОМИНАНИЙ ====================
     @db_retry()
     async def get_pending_orders_for_reminder(self, minutes: int = 5, max_reminders: int = 3) -> List[Order]:
-        """
-        Возвращает заявки со статусом 'pending', созданные более minutes минут назад,
-        у которых количество напоминаний меньше max_reminders.
-        """
         logger.debug(f"Запрос заявок для напоминаний (минут={minutes}, макс_напоминаний={max_reminders})")
         async with self.lock:
             self.conn.row_factory = aiosqlite.Row
@@ -338,15 +299,10 @@ class OrderRepository(BaseRepository):
                 AND reminder_count < ?
             """, (minutes, max_reminders))
             rows = await cursor.fetchall()
-            orders = [Order(**dict(row)) for row in rows]
-            logger.debug(f"Найдено {len(orders)} заявок для напоминаний")
-            return orders
+            return [Order(**dict(row)) for row in rows]
 
     @db_retry()
     async def increment_reminder_count(self, order_id: int) -> bool:
-        """
-        Увеличивает счётчик напоминаний и обновляет время последнего напоминания.
-        """
         logger.debug(f"Увеличение счётчика напоминаний для заявки #{order_id}")
         async with self.lock:
             await self.conn.execute("""
@@ -356,5 +312,4 @@ class OrderRepository(BaseRepository):
                 WHERE id = ?
             """, (order_id,))
             await self.conn.commit()
-            logger.debug(f"Счётчик напоминаний увеличен")
             return True

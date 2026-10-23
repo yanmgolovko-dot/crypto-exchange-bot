@@ -2,6 +2,7 @@
 from .reply import main_menu_keyboard, cancel_keyboard, exchange_menu_keyboard
 from .inline import (
     exchange_crypto_select_keyboard,
+    exchange_input_currency_keyboard,
     crypto_select_keyboard,
     currency_choice_keyboard,
     amount_select_keyboard,
@@ -21,6 +22,7 @@ __all__ = [
     'cancel_keyboard',
     'exchange_menu_keyboard',
     'exchange_crypto_select_keyboard',
+    'exchange_input_currency_keyboard',
     'crypto_select_keyboard',
     'currency_choice_keyboard',
     'amount_select_keyboard',
