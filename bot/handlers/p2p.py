@@ -399,9 +399,16 @@ async def _create_p2p_order(
             f"💰 Клиент получит: {_fmt_rub(amount_rub)} ₽\n"
             f"📬 Реквизиты клиента: <code>{escape_html(user_payment_details)}</code>\n"
             f"💱 Курс: {_fmt_rub(rate)} ₽\n\n"
-            f"⚠️ Отправьте клиенту адрес для приёма крипты через кнопку «Ввести реквизиты»."
+            f"⚠️ Отправьте клиенту адрес для приёма крипты через кнопку «🏦 Отправить адрес для крипты»."
         )
-        await notify_admins(bot, admin_text, reply_markup=manual_pending_keyboard(order_id))
+        
+        # ИСПРАВЛЕНИЕ: Генерируем правильную клавиатуру для P2P Sell
+        kb_sell = InlineKeyboardBuilder()
+        kb_sell.button(text="🏦 Отправить адрес для крипты", callback_data=f"admin_p2p_address_{order_id}")
+        kb_sell.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order_id}")
+        kb_sell.adjust(1)
+        
+        await notify_admins(bot, admin_text, reply_markup=kb_sell.as_markup())
 
     await state.clear()
 
