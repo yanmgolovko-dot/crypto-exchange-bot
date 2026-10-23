@@ -27,7 +27,8 @@ from bot.keyboards import (
     manual_pending_keyboard,
     auto_pending_keyboard,
     receipt_received_keyboard,
-    main_menu_keyboard
+    main_menu_keyboard,
+    coupons_selection_keyboard  # <--- ДОБАВИЛИ ИМПОРТ
 )
 from bot.config.settings import config
 from bot.admin.main import notify_admins
@@ -301,18 +302,41 @@ class EnterAmountCryptoStep(OrderCreationStep):
 class PromoOrCouponStep(OrderCreationStep):
     """Шаг 4: ввод промокода или купона (объединённый)."""
 
+    async def _get_order_amount(self) -> float:
+        """Вспомогательный метод для получения суммы в рублях для валидации купона."""
+        if self.data.input_type == 'rub':
+            return self.data.amount or 0
+        elif self.data.input_type == 'crypto':
+            return (self.data.amount or 0) * (self.data.rate or 0)
+        return 0
+
     async def display(self, message: Message, services: Dict[str, Any]):
         logger.info(f"[{self.data.user_id}] Отображение шага PromoOrCouponStep")
-        text = (
-            f"🎁 <b>Промокод или купон</b>\n\n"
-            f"Если у вас есть промокод или купон, введите его ниже.\n"
-            f"Или нажмите «Пропустить», чтобы продолжить без скидки."
-        )
-        keyboard = InlineKeyboardBuilder()
-        keyboard.button(text="⏩ Пропустить", callback_data="skip_promo_or_coupon")
-        keyboard.button(text="🔙 Назад", callback_data="back_to_amount")
-        keyboard.adjust(1)
-        await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+        db = services['db']
+        order_amount = await self._get_order_amount()
+        
+        coupons = await db.get_user_coupons(self.data.user_id)
+        valid_coupons = []
+        for c in coupons:
+            ok, _, _ = await db.validate_coupon(c.code, self.data.user_id, order_amount)
+            if ok:
+                valid_coupons.append(c)
+
+        if valid_coupons:
+            text = f"🎁 <b>У вас есть купоны!</b>\n\nВыберите купон для скидки или пропустите этот шаг.\n\nСумма заявки: {order_amount:,.0f} ₽"
+            keyboard = coupons_selection_keyboard(valid_coupons, skip_cb="skip_promo_or_coupon")
+            await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            text = (
+                f"🎁 <b>Промокод или купон</b>\n\n"
+                f"Если у вас есть промокод или купон, введите его ниже.\n"
+                f"Или нажмите «Пропустить», чтобы продолжить без скидки."
+            )
+            keyboard = InlineKeyboardBuilder()
+            keyboard.button(text="⏩ Пропустить", callback_data="skip_promo_or_coupon")
+            keyboard.button(text="🔙 Назад", callback_data="back_to_amount")
+            keyboard.adjust(1)
+            await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
 
     async def process_message(self, message: Message, services: Dict[str, Any]) -> bool:
         code = message.text.strip()
@@ -330,7 +354,7 @@ class PromoOrCouponStep(OrderCreationStep):
             return True
 
         # Если не промокод, проверяем как купон
-        order_amount = self.data.net_amount or 0
+        order_amount = await self._get_order_amount()
         is_valid_coupon, coupon_msg, coupon = await db.coupons.validate_coupon(code, self.data.user_id, order_amount)
         if is_valid_coupon and coupon:
             self.data.coupon_id = coupon.id
@@ -362,6 +386,35 @@ class PromoOrCouponStep(OrderCreationStep):
             self.data.back_to_amount = True
             await callback.answer()
             return True
+        elif callback.data.startswith("apply_coupon_"):
+            code = callback.data.split("_")[2]
+            db = services['db']
+            order_amount = await self._get_order_amount()
+            is_valid, msg, coupon = await db.validate_coupon(code, self.data.user_id, order_amount)
+            if is_valid:
+                self.data.coupon_id = coupon.id
+                self.data.coupon_code = coupon.code
+                self.data.coupon_discount_type = coupon.discount_type
+                self.data.coupon_discount_value = coupon.discount_value
+                self.data.coupon_discount_on = coupon.discount_on
+                await callback.message.answer(
+                    f"✅ Купон {code} применён!\n"
+                    f"Скидка: {coupon.discount_value}{'%' if coupon.discount_type == 'percent' else '₽'} "
+                    f"на {'всю сумму' if coupon.discount_on == 'order' else 'комиссию'}"
+                )
+                await callback.answer()
+                return True
+            else:
+                await callback.answer(f"❌ {msg}", show_alert=True)
+                return False
+        elif callback.data == "promo_manual":
+            # Переключаемся на ручной ввод
+            await callback.message.answer(
+                "🎁 <b>Промокод</b>\n\nВведите код промокода или нажмите «Пропустить»:",
+                reply_markup=InlineKeyboardBuilder().button(text="⏩ Пропустить", callback_data="skip_promo_or_coupon").as_markup()
+            )
+            await callback.answer()
+            return False
         return False
 
     async def get_next_step(self) -> Optional[OrderCreationStep]:
@@ -465,16 +518,11 @@ class ConfirmationStep(OrderCreationStep):
     async def process_callback(self, callback: CallbackQuery, services: Dict[str, Any]) -> bool:
         logger.info(f"[{self.data.user_id}] Обработка callback {callback.data} на шаге ConfirmationStep")
         if callback.data.startswith("confirm_order_"):
-            # Защита от повторного клика: если заявка уже создана, не создаём вторую.
             if self.data.order_id:
-                logger.warning(
-                    f"[{self.data.user_id}] Повторное подтверждение, заявка #{self.data.order_id} уже создана"
-                )
+                logger.warning(f"[{self.data.user_id}] Повторное подтверждение, заявка #{self.data.order_id} уже создана")
                 await callback.answer("Заявка уже создана.", show_alert=True)
                 return True
 
-            # Гарантируем, что пользователь есть в таблице users,
-            # иначе create_order упадёт на FOREIGN KEY.
             user_service = services.get('user_service')
             if user_service:
                 try:
@@ -484,18 +532,10 @@ class ConfirmationStep(OrderCreationStep):
                         first_name=None,
                         last_name=None,
                     )
-                    logger.debug(
-                        f"[{self.data.user_id}] Пользователь зарегистрирован/обновлён перед созданием заявки"
-                    )
+                    logger.debug(f"[{self.data.user_id}] Пользователь зарегистрирован/обновлён перед созданием заявки")
                 except Exception as e:
-                    logger.error(
-                        f"[{self.data.user_id}] Не удалось зарегистрировать пользователя: {e}",
-                        exc_info=True,
-                    )
-                    await callback.answer(
-                        "Ошибка регистрации пользователя. Попробуйте /start и повторите.",
-                        show_alert=True,
-                    )
+                    logger.error(f"[{self.data.user_id}] Не удалось зарегистрировать пользователя: {e}", exc_info=True)
+                    await callback.answer("Ошибка регистрации пользователя. Попробуйте /start и повторите.", show_alert=True)
                     return True
 
             order_service = services['order_service']
@@ -512,13 +552,12 @@ class ConfirmationStep(OrderCreationStep):
                 discount_percent=self.data.discount_percent,
                 coupon_id=self.data.coupon_id
             )
-            # Получаем созданную заявку, чтобы узнать публичный номер
             db = services['db']
             order = await db.get_order(order_id)
             if order and order.public_order_number:
                 self.data.public_order_number = order.public_order_number
             else:
-                self.data.public_order_number = order_id  # fallback на внутренний ID
+                self.data.public_order_number = order_id
 
             self.data.order_id = order_id
             logger.info(f"[{self.data.user_id}] Заявка #{order_id} создана, публичный номер: {self.data.public_order_number}")
@@ -542,7 +581,6 @@ class ConfirmationStep(OrderCreationStep):
         return None
 
     async def _send_payment_info(self, callback: CallbackQuery, services: Dict[str, Any]):
-        """Внутренний метод для отправки пользователю реквизитов и уведомления админов."""
         logger.info(f"[{self.data.user_id}] Отправка платёжной информации по заявке #{self.data.public_order_number}")
         bot = services['bot']
         db = services['db']
@@ -559,7 +597,6 @@ class ConfirmationStep(OrderCreationStep):
             await callback.message.answer(f"❌ {payment_info['error']}")
             return
 
-        # Используем публичный номер для отображения
         display_order_number = self.data.public_order_number or self.data.order_id
 
         if payment_info['auto']:
@@ -597,7 +634,6 @@ class ConfirmationStep(OrderCreationStep):
             logger.info(f"Администраторы уведомлены о новой заявке #{display_order_number} (авторежим)")
 
         else:
-            # Ручной режим
             text = (
                 f"✅ <b>Заявка #{display_order_number} создана!</b>\n\n"
                 f"Ожидайте, администратор отправит вам реквизиты для оплаты в ближайшее время.\n\n"
