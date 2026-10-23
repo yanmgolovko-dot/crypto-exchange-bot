@@ -4,6 +4,7 @@ P2P-обмен: покупка и продажа USDT, TRX, BTC, LTC по руч
 """
 
 import logging
+from typing import Optional
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -47,7 +48,7 @@ class P2PStates(StatesGroup):
     entering_amount = State()
     entering_wallet = State()
     entering_payment_details = State()
-    entering_client_tx_hash = State()  # Клиент вводит хеш после отправки крипты
+    entering_client_tx_hash = State()
 
 
 def _fmt_rub(val) -> str:
@@ -62,6 +63,19 @@ def _fmt_crypto(val) -> str:
         return f"{float(val):,.8f}".replace(',', ' ')
     except (ValueError, TypeError):
         return str(val)
+
+def _get_explorer_url(crypto_type: str, tx_hash: str) -> Optional[str]:
+    """Генерирует ссылку на блокчейн-эксплорер в зависимости от валюты."""
+    if not tx_hash or tx_hash == 'N/A':
+        return None
+    cur = (crypto_type or "").upper()
+    if cur == 'BTC':
+        return f"https://live.blockcypher.com/btc/tx/{tx_hash}/"
+    elif cur == 'LTC':
+        return f"https://live.blockcypher.com/ltc/tx/{tx_hash}/"
+    elif cur in ['USDT', 'TRX']:
+        return f"https://tronscan.org/#/transaction/{tx_hash}"
+    return None
 
 
 def _validate_address(address: str, coin: str) -> bool:
@@ -402,7 +416,6 @@ async def _create_p2p_order(
             f"⚠️ Отправьте клиенту адрес для приёма крипты через кнопку «🏦 Отправить адрес для крипты»."
         )
         
-        # ИСПРАВЛЕНИЕ: Генерируем правильную клавиатуру для P2P Sell
         kb_sell = InlineKeyboardBuilder()
         kb_sell.button(text="🏦 Отправить адрес для крипты", callback_data=f"admin_p2p_address_{order_id}")
         kb_sell.button(text="💬 Написать клиенту", callback_data=f"admin_msg_{order_id}")
@@ -468,11 +481,17 @@ async def p2p_client_tx_hash_received(message: Message, state: FSMContext, bot: 
         f"Ожидайте, администратор проверит поступление средств и переведёт вам рубли."
     )
 
+    explorer_url = _get_explorer_url(order.crypto_type, tx_hash)
+    
+    hash_text = f"🔗 Хеш: <code>{escape_html(tx_hash)}</code>\n"
+    if explorer_url:
+        hash_text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
+
     admin_text = (
         f"🔔 <b>Клиент прислал хеш по заявке #{order.public_order_number} (Продажа)</b>\n\n"
         f"👤 @{escape_html(order.username or 'N/A')}\n"
         f"🪙 {order.crypto_type} ({order.network})\n"
-        f"🔗 Хеш: <code>{escape_html(tx_hash)}</code>\n\n"
+        f"{hash_text}\n"
         f"Проверьте поступление крипты и подтвердите заявку в разделе «Заявки»."
     )
     await notify_admins(bot, admin_text)

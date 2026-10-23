@@ -286,8 +286,12 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
         text += f"Оплачена: {order.paid_at}\n"
     if order.completed_at:
         text += f"Завершена: {order.completed_at}\n"
+        
     if order.tx_hash:
-        text += f"Хеш транзакции: <code>{safe_tx_hash}</code>\n"
+        text += f"🔗 <b>Хеш транзакции:</b> <code>{safe_tx_hash}</code>\n"
+        explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
+        if explorer_url:
+            text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
 
     keyboard = InlineKeyboardBuilder()
     if order.status == 'paid':
@@ -402,8 +406,12 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
         text += f"Оплачена: {order.paid_at}\n"
     if order.completed_at:
         text += f"Завершена: {order.completed_at}\n"
+        
     if order.tx_hash:
-        text += f"Хеш транзакции: <code>{safe_tx_hash}</code>\n"
+        text += f"🔗 <b>Хеш транзакции:</b> <code>{safe_tx_hash}</code>\n"
+        explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
+        if explorer_url:
+            text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
 
     keyboard = InlineKeyboardBuilder()
     if order.status == 'paid':
@@ -467,8 +475,12 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
         text += f"Сеть: {order.network}\n"
     if order.user_payment_details:
         text += f"Реквизиты клиента: <code>{html.escape(order.user_payment_details)}</code>\n"
+        
     if order.tx_hash:
-        text += f"🔗 <b>Хеш транзакции клиента:</b> <code>{html.escape(order.tx_hash)}</code>\n"
+        text += f"\n🔗 <b>Хеш транзакции клиента:</b>\n<code>{html.escape(order.tx_hash)}</code>\n"
+        explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
+        if explorer_url:
+            text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
     
     text += f"\nВремя оплаты/отправки: {order.paid_at}\n\n"
     if order.order_type == 'p2p_sell':
@@ -700,10 +712,18 @@ async def admin_approve_order(
         except Exception as e:
             logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
+        hash_text = ""
+        if order.tx_hash:
+            hash_text = f"\n🔗 Хеш: <code>{html.escape(order.tx_hash)}</code>\n"
+            explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
+            if explorer_url:
+                hash_text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
+
         await callback.message.edit_text(
             f"✅ Заявка #{order.public_order_number or order.id} завершена.\n\n"
-            f"Пользователь уведомлен о выплате {order.amount_rub:,.0f} ₽.",
-            reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup()
+            f"Пользователь уведомлен о выплате {order.amount_rub:,.0f} ₽.{hash_text}",
+            reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup(),
+            parse_mode="HTML"
         )
         await callback.answer("Заявка завершена")
         return
@@ -761,9 +781,12 @@ async def admin_approve_order(
             f"💸 Криптовалюта отправлена:\n"
             f"   Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"   TX Hash: <code>{html.escape(tx_hash)}</code>\n"
-            f"   Комиссия: {order.amount_rub * order.fee_percent / 100:,.0f} ₽\n\n"
-            f"Пользователь уведомлен."
         )
+        if explorer_url:
+             result_text += f"   <a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
+             
+        result_text += f"   Комиссия: {order.amount_rub * order.fee_percent / 100:,.0f} ₽\n\nПользователь уведомлен."
+        
         reply_markup = InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup()
         try:
             await callback.message.edit_text(result_text, reply_markup=reply_markup, parse_mode="HTML")
@@ -914,7 +937,6 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
             f"[ADMIN {admin_id}] Заявка #{order_id} НЕ завершена: {err} "
             f"Хеш '{tx_hash}' не сохранён."
         )
-        # НЕ очищаем state — админ может ввести хеш ещё раз.
         extra_hint = ""
         current = await db.get_order(order_id)
         if current and current.status == 'processing':
