@@ -37,6 +37,9 @@ async def send_settings_menu(user_id: int, bot: Bot):
     reminders_enabled = await db.settings.get_reminders_enabled()
     reminders_status = "✅ Вкл" if reminders_enabled else "❌ Выкл"
 
+    user_notify_enabled = await db.settings.get_setting('notify_new_users', '1')
+    user_notify_status = "✅ Вкл" if user_notify_enabled == '1' else "❌ Выкл"
+
     welcome_config = await db.settings.get_json_setting('welcome_coupon_config', {})
     activity_config = await db.settings.get_json_setting('activity_coupon_config', {})
 
@@ -54,6 +57,7 @@ async def send_settings_menu(user_id: int, bot: Bot):
     keyboard.button(text=f"🎁 Купоны за активность {activity_status}", callback_data="admin_edit_activity_coupon")
     keyboard.button(text=f"📋 След. № заявки ({next_order})", callback_data="admin_set_next_order_number")
     keyboard.button(text=f"🔔 Напоминания {reminders_status}", callback_data="admin_toggle_reminders")
+    keyboard.button(text=f"👤 Уведомления о юзерах {user_notify_status}", callback_data="admin_toggle_user_notify") # <-- НОВАЯ КНОПКА
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
@@ -70,7 +74,8 @@ async def send_settings_menu(user_id: int, bot: Bot):
         f"• За активность: {activity_status}\n\n"
         f"<b>Нумерация заявок:</b>\n"
         f"• Следующий номер: {next_order}\n\n"
-        f"<b>Напоминания о чеке:</b> {'включены' if reminders_enabled else 'отключены'}\n\n"
+        f"<b>Напоминания о чеке:</b> {'включены' if reminders_enabled else 'отключены'}\n"
+        f"<b>Уведомления о новых юзерах:</b> {'включены' if user_notify_enabled == '1' else 'отключены'}\n\n"
         "Выберите настройку для изменения:"
     )
 
@@ -84,7 +89,6 @@ async def admin_settings_menu(callback: CallbackQuery):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    # Получаем текущие настройки из БД
     fee = await db.get_exchange_fee()
     min_amount = await db.get_setting('min_amount', str(config.MIN_AMOUNT))
     max_amount = await db.get_setting('max_amount', str(config.MAX_AMOUNT))
@@ -97,7 +101,9 @@ async def admin_settings_menu(callback: CallbackQuery):
     reminders_enabled = await db.settings.get_reminders_enabled()
     reminders_status = "✅ Вкл" if reminders_enabled else "❌ Выкл"
 
-    # Получаем настройки купонов (JSON)
+    user_notify_enabled = await db.settings.get_setting('notify_new_users', '1')
+    user_notify_status = "✅ Вкл" if user_notify_enabled == '1' else "❌ Выкл"
+
     welcome_config = await db.settings.get_json_setting('welcome_coupon_config', {
         "enabled": False,
         "discount_type": "percent",
@@ -128,6 +134,7 @@ async def admin_settings_menu(callback: CallbackQuery):
     keyboard.button(text=f"🎁 Купоны за активность {activity_status}", callback_data="admin_edit_activity_coupon")
     keyboard.button(text=f"📋 След. № заявки ({next_order})", callback_data="admin_set_next_order_number")
     keyboard.button(text=f"🔔 Напоминания {reminders_status}", callback_data="admin_toggle_reminders")
+    keyboard.button(text=f"👤 Уведомления о юзерах {user_notify_status}", callback_data="admin_toggle_user_notify") # <-- НОВАЯ КНОПКА
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
@@ -144,7 +151,8 @@ async def admin_settings_menu(callback: CallbackQuery):
         f"• За активность: {activity_status}\n\n"
         f"<b>Нумерация заявок:</b>\n"
         f"• Следующий номер: {next_order}\n\n"
-        f"<b>Напоминания о чеке:</b> {'включены' if reminders_enabled else 'отключены'}\n\n"
+        f"<b>Напоминания о чеке:</b> {'включены' if reminders_enabled else 'отключены'}\n"
+        f"<b>Уведомления о новых юзерах:</b> {'включены' if user_notify_enabled == '1' else 'отключены'}\n\n"
         "Выберите настройку для изменения:"
     )
 
@@ -156,6 +164,19 @@ async def admin_settings_menu(callback: CallbackQuery):
     )
     await callback.answer()
 
+# ==================== НАСТРОЙКА УВЕДОМЛЕНИЙ О ЮЗЕРАХ ====================
+@router.callback_query(F.data == "admin_toggle_user_notify")
+async def admin_toggle_user_notify(callback: CallbackQuery):
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    current = await db.settings.get_setting('notify_new_users', '1')
+    new_state = '0' if current == '1' else '1'
+    await db.settings.set_setting('notify_new_users', new_state, admin_id)
+    await callback.answer(f"Уведомления о новых юзерах {'включены' if new_state == '1' else 'отключены'}", show_alert=True)
+    await admin_settings_menu(callback)
 
 # ==================== НАСТРОЙКА ПРИВЕТСТВЕННЫХ КУПОНОВ ====================
 @router.callback_query(F.data == "admin_edit_welcome_coupon")
@@ -243,7 +264,7 @@ async def admin_welcome_set_discount_type_finish(callback: CallbackQuery, state:
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    discount_type = callback.data.split("_")[-1]  # percent или fixed
+    discount_type = callback.data.split("_")[-1]
     config = await db.settings.get_json_setting('welcome_coupon_config')
     config['discount_type'] = discount_type
     await db.settings.set_json_setting('welcome_coupon_config', config, admin_id)
@@ -308,7 +329,7 @@ async def admin_welcome_set_discount_on_start(callback: CallbackQuery, state: FS
 @router.callback_query(AdminStates.editing_welcome_discount_on, F.data.startswith("welcome_discount_on_"))
 async def admin_welcome_set_discount_on_finish(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
-    discount_on = callback.data.split("_")[-1]  # order или commission
+    discount_on = callback.data.split("_")[-1]
     config = await db.settings.get_json_setting('welcome_coupon_config')
     config['discount_on'] = discount_on
     await db.settings.set_json_setting('welcome_coupon_config', config, admin_id)
@@ -463,7 +484,7 @@ async def admin_activity_add_threshold_orders(message: Message, state: FSMContex
 
 @router.callback_query(AdminStates.adding_activity_threshold_discount_type, F.data.startswith("activity_threshold_type_"))
 async def admin_activity_add_threshold_type(callback: CallbackQuery, state: FSMContext):
-    discount_type = callback.data.split("_")[-1]  # percent или fixed
+    discount_type = callback.data.split("_")[-1]
     await state.update_data(threshold_discount_type=discount_type)
     await state.set_state(AdminStates.adding_activity_threshold_value)
     await safe_edit_message(
@@ -498,7 +519,7 @@ async def admin_activity_add_threshold_value(message: Message, state: FSMContext
 
 @router.callback_query(AdminStates.adding_activity_threshold_discount_on, F.data.startswith("activity_threshold_on_"))
 async def admin_activity_add_threshold_discount_on(callback: CallbackQuery, state: FSMContext):
-    discount_on = callback.data.split("_")[-1]  # order или commission
+    discount_on = callback.data.split("_")[-1]
     await state.update_data(threshold_discount_on=discount_on)
     await state.set_state(AdminStates.adding_activity_threshold_valid_days)
     await safe_edit_message(
@@ -608,7 +629,6 @@ async def admin_set_next_order_number_finish(message: Message, state: FSMContext
     await db.settings.set_setting('next_order_number', str(new_number), admin_id)
     await message.answer(f"✅ Следующий номер заявки установлен: {new_number}")
 
-    # Возвращаемся в меню настроек
     await send_settings_menu(message.from_user.id, message.bot)
     await state.clear()
 

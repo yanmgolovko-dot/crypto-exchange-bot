@@ -16,6 +16,7 @@ from .health import router as health_router
 from .rates import router as rates_router
 from .ref_links import router as ref_links_router
 from .spin import router as spin_admin_router
+from .bank import router as bank_router  # <-- ДОБАВЛЕНО
 
 router = Router()
 router.include_router(main_router)
@@ -34,5 +35,6 @@ router.include_router(health_router)
 router.include_router(rates_router)
 router.include_router(ref_links_router)
 router.include_router(spin_admin_router)
+router.include_router(bank_router)  # <-- ДОБАВЛЕНО
 
 __all__ = ['router']

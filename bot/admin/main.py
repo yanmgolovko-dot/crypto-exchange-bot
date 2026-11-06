@@ -72,6 +72,7 @@ def admin_main_keyboard():
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="📋 Заявки", callback_data="admin_orders_menu")
     keyboard.button(text="💰 Финансы", callback_data="admin_finance_menu")
+    keyboard.button(text="💳 Реквизиты", callback_data="admin_bank_menu") # <-- ДОБАВЛЕНА КНОПКА
     keyboard.button(text="⚙️ Курсы обмена", callback_data="admin_rates_menu")
     keyboard.button(text="👥 Пользователи", callback_data="admin_users_menu")
     keyboard.button(text="🔗 Реф. ссылки", callback_data="admin_ref_links_menu")
@@ -84,7 +85,7 @@ def admin_main_keyboard():
     keyboard.button(text="🔍 Диагностика", callback_data="admin_diagnostic")
     keyboard.button(text="📊 Дашборд", callback_data="admin_dashboard")
     keyboard.button(text="👑 Управление админами", callback_data="admin_manage_admins")
-    keyboard.adjust(2, 2, 2, 2, 2, 2, 2)
+    keyboard.adjust(2, 2, 2, 2, 2, 2, 2, 1)
     return keyboard.as_markup()
 
 

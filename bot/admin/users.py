@@ -33,6 +33,7 @@ async def admin_users_menu(callback: CallbackQuery):
     logger.info(f"[ADMIN {admin_id}] Открыто меню управления пользователями")
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="👥 Все пользователи", callback_data="admin_users_all_0")
+    keyboard.button(text="🆕 Первые 10 юзеров", callback_data="admin_users_first_10") # <-- НОВАЯ КНОПКА
     keyboard.button(text="🔍 Найти пользователя", callback_data="admin_user_search")
     keyboard.button(text="🚫 Забанить по ID", callback_data="admin_user_ban")
     keyboard.button(text="✅ Разбанить по ID", callback_data="admin_user_unban")
@@ -41,6 +42,48 @@ async def admin_users_menu(callback: CallbackQuery):
     keyboard.adjust(1)
 
     text = "👥 <b>Управление пользователями</b>\n\nВыберите действие:"
+    await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_users_first_10")
+async def admin_users_first_10(callback: CallbackQuery):
+    """Показывает первых 10 зарегистрированных пользователей с кликабельными ссылками."""
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    users = await db.get_all_users()
+    first_10 = users[:10]
+
+    if not first_10:
+        text = "📭 Список пользователей пуст."
+        keyboard = InlineKeyboardBuilder()
+        keyboard.button(text="🔙 Назад", callback_data="admin_users_menu")
+        await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup())
+        await callback.answer()
+        return
+
+    text = "🆕 <b>Первые 10 пользователей:</b>\n\n"
+    for i, user in enumerate(first_10, 1):
+        safe_name = escape_html(user.first_name or "Без имени")
+        username_str = f" (@{escape_html(user.username)})" if user.username else ""
+        
+        # Делаем имя кликабельным (открывает профиль в Telegram)
+        user_link = f'<a href="tg://user?id={user.user_id}">{safe_name}</a>'
+        
+        status = "🚫" if user.is_banned else "✅"
+        
+        text += (
+            f"{i}. {status} {user_link}{username_str}\n"
+            f"   ID: <code>{user.user_id}</code>\n"
+            f"   Рег: {user.created_at[:10]}\n\n"
+        )
+
+    keyboard = InlineKeyboardBuilder()
+    keyboard.button(text="🔙 Назад", callback_data="admin_users_menu")
+    
     await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 

@@ -28,7 +28,7 @@ from bot.keyboards import (
     auto_pending_keyboard,
     receipt_received_keyboard,
     main_menu_keyboard,
-    coupons_selection_keyboard  # <--- ДОБАВИЛИ ИМПОРТ
+    coupons_selection_keyboard
 )
 from bot.config.settings import config
 from bot.admin.main import notify_admins
@@ -531,6 +531,7 @@ class ConfirmationStep(OrderCreationStep):
                         username=self.data.username,
                         first_name=None,
                         last_name=None,
+                        bot=callback.bot  # <--- ДОБАВЛЕНО СЮДА!
                     )
                     logger.debug(f"[{self.data.user_id}] Пользователь зарегистрирован/обновлён перед созданием заявки")
                 except Exception as e:

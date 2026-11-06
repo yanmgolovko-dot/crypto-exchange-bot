@@ -58,6 +58,7 @@ class UserRepository(BaseRepository):
     @db_retry()
     async def add_or_update_user(self, user_id: int, username: str = None,
                                   first_name: str = None, last_name: str = None) -> bool:
+        """Возвращает True, если пользователь новый, и False, если существующий."""
         logger.info(f"[{user_id}] Добавление/обновление пользователя")
         async with self.lock:
             cursor = await self.conn.execute(
@@ -65,12 +66,14 @@ class UserRepository(BaseRepository):
             )
             row = await cursor.fetchone()
 
+            is_new = False
             if row:
                 await self.conn.execute("""
                     UPDATE users SET username = ?, first_name = ?, last_name = ?, last_activity = CURRENT_TIMESTAMP
                     WHERE user_id = ?
                 """, (username, first_name, last_name, user_id))
             else:
+                is_new = True
                 referral_code = None
                 for _ in range(10):
                     candidate = _generate_ref_code(first_name)
@@ -87,7 +90,7 @@ class UserRepository(BaseRepository):
                 """, (user_id, username, first_name, last_name, referral_code))
             
             await self.conn.commit()
-            return True
+            return is_new
 
     @db_retry()
     async def set_referrer(self, user_id: int, referrer_id: int) -> bool:

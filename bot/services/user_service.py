@@ -5,6 +5,7 @@ import logging
 from typing import Optional, Tuple, Dict, Any
 
 from bot.services.db import Database
+from bot.admin.main import notify_admins
 
 logger = logging.getLogger(__name__)
 
@@ -27,27 +28,45 @@ class UserService:
         username: Optional[str],
         first_name: Optional[str],
         last_name: Optional[str],
-        referred_by: Optional[int] = None
+        referred_by: Optional[int] = None,
+        bot = None  # <-- ДОБАВЛЕН ПАРАМЕТР
     ) -> bool:
         """
         Регистрирует нового пользователя или обновляет данные существующего.
         Если передан referred_by, устанавливает реферера (только при первой регистрации).
+        Возвращает True, если пользователь новый.
         """
         logger.info(f"[{user_id}] Регистрация/обновление пользователя")
         try:
-            await self.db.add_or_update_user(
+            is_new = await self.db.add_or_update_user(
                 user_id=user_id,
                 username=username,
                 first_name=first_name,
                 last_name=last_name
             )
-            logger.debug(f"[{user_id}] Основные данные сохранены")
+            logger.debug(f"[{user_id}] Основные данные сохранены. Новый: {is_new}")
 
             if referred_by and referred_by != user_id:
                 await self.db.set_referrer(user_id, referred_by)
                 logger.info(f"[{user_id}] Установлен реферер {referred_by}")
 
-            return True
+            # --- УВЕДОМЛЕНИЕ О НОВОМ ПОЛЬЗОВАТЕЛЕ ---
+            if is_new and bot:
+                notify_enabled = await self.db.get_setting('notify_new_users', '1')
+                if notify_enabled == '1':
+                    safe_username = f"@{username}" if username else "Нет"
+                    text = (
+                        f"👤 <b>Новый пользователь!</b>\n\n"
+                        f"ID: <code>{user_id}</code>\n"
+                        f"Имя: {first_name or 'Нет'}\n"
+                        f"Username: {safe_username}"
+                    )
+                    try:
+                        await notify_admins(bot, text)
+                    except Exception as e:
+                        logger.error(f"Не удалось уведомить админов о новом юзере: {e}")
+
+            return is_new
         except Exception as e:
             logger.error(f"[{user_id}] Ошибка при регистрации пользователя: {e}", exc_info=True)
             return False

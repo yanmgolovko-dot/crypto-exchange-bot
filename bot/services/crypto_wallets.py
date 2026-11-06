@@ -21,12 +21,18 @@ from bot.config.settings import config
 
 logger = logging.getLogger(__name__)
 
+# Порог «пыли» (dust) для выходов BTC/LTC — ниже него создавать change-выход
+# не имеет смысла: сеть всё равно не примет его как экономически выгодный.
+_DUST_SAT = 546
+
 
 # ==================== BitcoinService через BlockCypher ====================
 class BitcoinServiceBlockCypher:
     """Сервис для работы с Bitcoin через BlockCypher API (не требует Electrum)."""
 
     API_URL = "https://api.blockcypher.com/v1/btc/main"
+    # Фиксированная комиссия сети для BTC: 0.0001 BTC = 10 000 sat
+    FEE_SAT = 10000
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -90,22 +96,21 @@ class BitcoinServiceBlockCypher:
         """
         Отправить BTC через BlockCypher:
         1. Получить UTXO для адреса отправителя.
-        2. Создать и подписать транзакцию через bitcoinlib с фиксированной комиссией 0.0001 BTC.
+        2. Создать и подписать транзакцию через bitcoinlib с фиксированной
+           комиссией 0.0001 BTC и явным выходом для сдачи.
         3. Отправить через BlockCypher API (метод push tx).
         """
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
 
-        logger.info(f"=== send_transaction Bitcoin BlockCypher START ===")
+        logger.info("=== send_transaction Bitcoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
         logger.info(f"amount_btc: {amount_btc}")
 
-        # Получаем ключ и адрес отправителя
         key = Key(import_key=from_privkey_wif, network='bitcoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
 
-        # Получаем UTXO
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет непотраченных выходов (UTXO) для этого адреса")
@@ -114,33 +119,60 @@ class BitcoinServiceBlockCypher:
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
 
-        # Создаём транзакцию через bitcoinlib с фиксированной комиссией 10000 сатоши (0.0001 BTC)
-        t = Transaction(network='bitcoin', fee=10000)
+        amount_sat = int(round(amount_btc * 1e8))
+
+        # Собираем inputs и параллельно считаем их сумму.
+        t = Transaction(network='bitcoin', fee=self.FEE_SAT)
+        total_input_sat = 0
         for utxo in utxos:
             t.add_input(
                 prev_txid=utxo["txid"],
                 output_n=utxo["vout"],
                 keys=[key],
-                value=utxo["satoshis"]
+                value=utxo["satoshis"],
+            )
+            total_input_sat += utxo["satoshis"]
+
+        change_sat = total_input_sat - amount_sat - self.FEE_SAT
+        if change_sat < 0:
+            raise Exception(
+                f"Недостаточно средств на кошельке: требуется "
+                f"{amount_sat + self.FEE_SAT} sat, доступно {total_input_sat} sat"
             )
 
-        amount_sat = int(amount_btc * 1e8)
+        # Основной выход получателю
         t.add_output(address=to_address, value=amount_sat)
+
+        # Явный выход для сдачи. Без этого вся разница между суммой inputs
+        # и выходом получателя уйдёт майнеру как «комиссия».
+        if change_sat > _DUST_SAT:
+            t.add_output(address=from_address, value=change_sat)
+            logger.info(f"Добавлена сдача: {change_sat} sat на {from_address}")
+        elif change_sat > 0:
+            logger.info(
+                f"Сдача {change_sat} sat ≤ dust-порога ({_DUST_SAT} sat) — "
+                f"уходит в комиссию майнеру"
+            )
+        else:
+            logger.info("Сдача = 0, UTXO израсходованы полностью")
+
         t.sign()
 
         if not t.verify():
             raise Exception("Transaction verification failed")
-        logger.info("Транзакция подписана и верифицирована")
 
-        # Отладочный вывод количества выходов (для контроля сдачи)
-        logger.info(f"Количество выходов транзакции: {len(t.outputs)}")
-        if len(t.outputs) == 1:
-            logger.warning("Выход только один – сдача не создана (UTXO израсходован полностью)")
+        # После подписи проверяем фактический баланс транзакции
+        total_out_sat = sum(o.value for o in t.outputs)
+        actual_fee_sat = total_input_sat - total_out_sat
+        logger.info(
+            f"Транзакция подписана и верифицирована: "
+            f"inputs={total_input_sat} sat, outputs={total_out_sat} sat, "
+            f"фактическая комиссия={actual_fee_sat} sat"
+        )
 
         tx_hex = t.raw_hex()
         logger.info(f"raw_hex длина: {len(tx_hex)}")
 
-        # Отправляем через BlockCypher
         session = await self._get_session()
         push_url = f"{self.API_URL}/txs/push?token={self.api_token}"
         payload = {"tx": tx_hex}
@@ -160,6 +192,8 @@ class LitecoinServiceBlockCypher:
     """Сервис для работы с Litecoin через BlockCypher API."""
 
     API_URL = "https://api.blockcypher.com/v1/ltc/main"
+    # Фиксированная комиссия сети для LTC: 0.001 LTC = 100 000 sat
+    FEE_SAT = 100000
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -217,35 +251,76 @@ class LitecoinServiceBlockCypher:
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
 
-        logger.info(f"=== send_transaction Litecoin BlockCypher START ===")
+        logger.info("=== send_transaction Litecoin BlockCypher START ===")
+        logger.info(f"to_address: {to_address}")
+        logger.info(f"amount_ltc: {amount_ltc}")
+
         key = Key(import_key=from_privkey_wif, network='litecoin')
         from_address = key.address()
+        logger.info(f"from_address: {from_address}")
+
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет UTXO")
 
-        # Создаём транзакцию через bitcoinlib с фиксированной комиссией 100000 сатоши (0.001 LTC)
-        t = Transaction(network='litecoin', fee=100000)
+        logger.info(f"Найдено UTXO: {len(utxos)}")
+        for utxo in utxos:
+            logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
+
+        amount_sat = int(round(amount_ltc * 1e8))
+
+        # Собираем inputs и параллельно считаем их сумму.
+        t = Transaction(network='litecoin', fee=self.FEE_SAT)
+        total_input_sat = 0
         for utxo in utxos:
             t.add_input(
                 prev_txid=utxo["txid"],
                 output_n=utxo["vout"],
                 keys=[key],
-                value=utxo["satoshis"]
+                value=utxo["satoshis"],
+            )
+            total_input_sat += utxo["satoshis"]
+
+        change_sat = total_input_sat - amount_sat - self.FEE_SAT
+        if change_sat < 0:
+            raise Exception(
+                f"Недостаточно средств на кошельке: требуется "
+                f"{amount_sat + self.FEE_SAT} sat, доступно {total_input_sat} sat"
             )
 
-        amount_sat = int(amount_ltc * 1e8)
+        # Основной выход получателю
         t.add_output(address=to_address, value=amount_sat)
+
+        # Явный выход для сдачи. Без этого вся разница между суммой inputs
+        # и выходом получателя уйдёт майнеру как «комиссия».
+        if change_sat > _DUST_SAT:
+            t.add_output(address=from_address, value=change_sat)
+            logger.info(f"Добавлена сдача: {change_sat} sat на {from_address}")
+        elif change_sat > 0:
+            logger.info(
+                f"Сдача {change_sat} sat ≤ dust-порога ({_DUST_SAT} sat) — "
+                f"уходит в комиссию майнеру"
+            )
+        else:
+            logger.info("Сдача = 0, UTXO израсходованы полностью")
+
         t.sign()
 
         if not t.verify():
             raise Exception("Transaction verification failed")
 
-        logger.info(f"Количество выходов транзакции: {len(t.outputs)}")
-        if len(t.outputs) == 1:
-            logger.warning("Выход только один – сдача не создана (UTXO израсходован полностью)")
+        # После подписи проверяем фактический баланс транзакции
+        total_out_sat = sum(o.value for o in t.outputs)
+        actual_fee_sat = total_input_sat - total_out_sat
+        logger.info(
+            f"Транзакция подписана и верифицирована: "
+            f"inputs={total_input_sat} sat, outputs={total_out_sat} sat, "
+            f"фактическая комиссия={actual_fee_sat} sat"
+        )
 
         tx_hex = t.raw_hex()
+        logger.info(f"raw_hex длина: {len(tx_hex)}")
+
         session = await self._get_session()
         push_url = f"{self.API_URL}/txs/push?token={self.api_token}"
         payload = {"tx": tx_hex}
@@ -253,6 +328,7 @@ class LitecoinServiceBlockCypher:
             if resp.status == 201:
                 result = await resp.json()
                 txid = result["tx"]["hash"]
+                logger.info(f"✅ Транзакция отправлена, txid: {txid}")
                 return txid
             else:
                 error_text = await resp.text()
