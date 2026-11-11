@@ -16,9 +16,7 @@ class PartnerService:
 
     async def generate_referral_code(self, user_id: int) -> str:
         """Генерирует уникальный реферальный код для пользователя."""
-        # Простой генератор: можно улучшить
         code = f"REF{user_id}"
-        # Проверим уникальность
         existing = await db.partners.get_partner(user_id)
         if existing and existing.referral_code:
             return existing.referral_code
@@ -32,23 +30,19 @@ class PartnerService:
 
     async def build_referral_tree(self, new_user_id: int, referrer_id: int):
         """
-        При регистрации нового пользователя по ссылке партнёра строит все уровни вверх.
+        При регистрации нового пользователя строит все уровни вверх.
+        Больше не требует, чтобы пригласивший был в таблице partners.
         """
         settings = await db.partners.get_settings()
         max_levels = settings.max_levels
 
-        # Рекурсивно или циклом поднимаемся вверх до максимального уровня
         current_referrer = referrer_id
         level = 1
         while level <= max_levels and current_referrer:
-            # Проверяем, что реферер является активным партнёром
-            partner = await db.partners.get_partner(current_referrer)
-            if partner and partner.is_active:
-                await db.partners.add_referral_link(current_referrer, new_user_id, level)
-            # Переходим выше
-            # Для этого нужно знать, кто пригласил текущего реферера. Ищем в referral_tree записи, где referred_id = current_referrer и уровень минимальный.
-            # Упростим: будем хранить в users поле referred_by, но для многоуровневости нужно дерево. Поэтому в этом методе мы будем использовать referred_by из users.
-            # В users есть поле referred_by. Будем подниматься по нему.
+            # Просто добавляем связь в дерево
+            await db.partners.add_referral_link(current_referrer, new_user_id, level)
+            
+            # Идем выше по цепочке (кто пригласил текущего реферера)
             user = await db.get_user(current_referrer)
             current_referrer = user.referred_by if user else None
             level += 1
@@ -60,6 +54,7 @@ class PartnerService:
         """
         settings = await db.partners.get_settings()
         if not settings.enabled:
+            logger.debug("Партнёрская программа отключена")
             return
 
         # Определяем базу для начисления (комиссия или сумма заказа)
@@ -68,13 +63,30 @@ class PartnerService:
         else:
             base_amount = order.amount_rub
 
-        # Получаем всех рефереров до max_levels
+        # Получаем всех рефереров до max_levels из дерева
         referrers = await db.partners.get_referrers_chain(order.user_id, settings.max_levels)
+
+        # СТРАХОВКА: Если дерево пустое (старые заказы), берем прямого пригласившего из users
+        if not referrers:
+            buyer = await db.get_user(order.user_id)
+            if buyer and buyer.referred_by:
+                logger.info(f"Дерево рефералов пустое для юзера {order.user_id}. Использую прямого реферера {buyer.referred_by} из users.")
+                referrers = [(buyer.referred_by, 1)]
+
+        if not referrers:
+            logger.debug(f"У пользователя {order.user_id} нет рефереров. Начисления отменены.")
+            return
 
         async with db.uow() as uow:
             for referrer_id, level in referrers:
-                # Проверяем, что реферер активный партнёр
+                # Проверяем, что реферер есть в партнерах
                 partner = await uow.partners.get_partner(referrer_id)
+                
+                # Если его там нет (обычный юзер), автоматически создаем ему профиль партнера
+                if not partner:
+                    await uow.partners.add_partner(referrer_id, f"REF{referrer_id}")
+                    partner = await uow.partners.get_partner(referrer_id)
+
                 if not partner or not partner.is_active:
                     continue
 
@@ -92,19 +104,29 @@ class PartnerService:
                 if reward <= 0:
                     continue
 
-                # Начисляем
+                # 1. Начисляем баланс партнеру
                 await uow.partners.update_partner_balance(referrer_id, reward)
-                # Записываем в referral_earnings
+                
+                # 2. Записываем в общую финансовую историю
                 await uow.finance.add_financial_record(
                     record_type='expense',
                     category='referral_payment',
                     amount=reward,
-                    description=f'Начисление партнёру за заказ #{order.id}, уровень {level}',
+                    description=f'Начисление партнёру {referrer_id} за заказ #{order.id}, уровень {level}',
                     order_id=order.id,
                     created_by=None
                 )
-                # Также можно сохранить в отдельной таблице referral_earnings, но у нас уже есть финансовая запись.
-                # Для статистики партнёра можно добавить отдельную таблицу, но пока достаточно.
+
+                # 3. Записываем в историю начислений для партнера (чтобы отображалось в ЛК)
+                await uow.users.add_referral_earning(
+                    referrer_id=referrer_id,
+                    referred_id=order.user_id,
+                    order_id=order.id,
+                    amount=reward,
+                    percent=reward_config['value']
+                )
+                
+                logger.info(f"Начислено {reward:.2f} ₽ партнёру {referrer_id} (уровень {level}) за заказ #{order.id}")
 
             await uow.commit()
 

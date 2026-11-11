@@ -77,14 +77,14 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
             first_name=first_name,
             last_name=message.from_user.last_name,
             referred_by=referred_by,
-            bot=message.bot  # <-- ДОБАВЛЕНО СЮДА
+            bot=message.bot
         )
         await coupon_service.give_welcome_coupon(user_id)
 
         if referred_by:
-            partner = await db.partners.get_partner(referred_by)
-            if partner and partner.is_active:
-                await partner_service.build_referral_tree(user_id, referred_by)
+            # Строим дерево для всех, без проверки на наличие в таблице partners
+            await partner_service.build_referral_tree(user_id, referred_by)
+            
     except Exception as e:
         logger.error(f"[{user_id}] Ошибка при регистрации пользователя: {e}", exc_info=True)
 
