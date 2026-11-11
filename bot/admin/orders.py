@@ -18,6 +18,7 @@ from bot.services.payment_service import PaymentService
 from bot.services.order_service import OrderService
 from bot.services.admin_order_service import AdminOrderService
 from bot.services.coupon_service import coupon_service
+from bot.services.review_notifier import ask_for_review  # <-- ДОБАВЛЕН ИМПОРТ
 from bot.keyboards import admin_order_keyboard, manual_pending_keyboard, auto_pending_keyboard, receipt_received_keyboard
 from bot.admin.main import is_admin, notify_admins, send_receipt
 from bot.admin.states import AdminStates
@@ -623,6 +624,9 @@ async def admin_approve_order(
         try: await bot.send_message(order.user_id, user_text, parse_mode="HTML")
         except Exception as e: logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
+        # Отправка запроса отзыва
+        await ask_for_review(bot, order.user_id, order_id) # <-- ДОБАВЛЕНО
+
         hash_text = ""
         if order.tx_hash:
             hash_text = f"\n🔗 Хеш: <code>{html.escape(order.tx_hash)}</code>\n"
@@ -640,7 +644,16 @@ async def admin_approve_order(
 
     payment_mode = await db.get_payment_mode()
 
-    if payment_mode == 'auto':
+    auto_send = (payment_mode == 'auto') or (
+        order.crypto_type == 'LTC' and order.order_type != 'p2p_sell'
+    )
+
+    if auto_send:
+        if payment_mode != 'auto':
+            logger.info(
+                f"[ADMIN {admin_id}] Заявка #{order_id}: LTC-автоотправка в ручном режиме"
+            )
+
         result = await admin_order_service.approve_order_auto(order_id, admin_id, bot)
         if not result['success']:
             await callback.answer(f"❌ {result['error']}", show_alert=True)
@@ -680,10 +693,14 @@ async def admin_approve_order(
         )
         try: await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
         except: pass
+        
+        await ask_for_review(bot, order.user_id, order_id) # <-- ДОБАВЛЕНО СЮДА
+
         await notify_admins(bot, admin_text, exclude_id=admin_id)
 
+        mode_note = " (автоотправка LTC в ручном режиме)" if payment_mode != 'auto' and order.crypto_type == 'LTC' else ""
         result_text = (
-            f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"
+            f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>{mode_note}\n\n"
             f"💸 Криптовалюта отправлена:\n"
             f"   Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"   TX Hash: <code>{html.escape(tx_hash)}</code>\n"
@@ -696,7 +713,7 @@ async def admin_approve_order(
         except: await callback.message.answer(result_text, reply_markup=reply_markup, parse_mode="HTML")
         await callback.answer("Заявка подтверждена!")
 
-    else:  # Ручной режим
+    else:  # Ручной режим (BTC или LTC, если авто отключили бы)
         if order.status != 'paid':
             await callback.answer("❌ Заявка не в статусе 'оплачена'. Чек ещё не получен.", show_alert=True)
             return
@@ -806,6 +823,8 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
 
     try: await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
     except: pass
+
+    await ask_for_review(bot, order.user_id, order_id) # <-- ДОБАВЛЕНО СЮДА
 
     await message.answer(f"✅ Хеш сохранён. Пользователь уведомлён. Заявка #{order.public_order_number or order.id} выполнена.")
     await state.clear()

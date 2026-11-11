@@ -12,7 +12,6 @@ from bot.services.crypto_wallets import CryptoWalletManager
 from bot.services.coupon_service import coupon_service
 from bot.services.partner_service import partner_service
 from bot.config.settings import config
-from bot.services.review_notifier import ask_for_review
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +130,6 @@ class AdminOrderService:
         # Начисляем партнёрские вознаграждения
         await partner_service.process_order_reward(order)
 
-        # Отправляем предложение оставить отзыв
-        await ask_for_review(bot, order.user_id, order_id)
-
         return {
             'success': True,
             'tx_hash': tx_hash,
@@ -232,8 +228,6 @@ class AdminOrderService:
         # Начисляем партнёрские вознаграждения
         await partner_service.process_order_reward(order)
 
-        # Отправляем предложение оставить отзыв
-        await ask_for_review(bot, order.user_id, order_id)
         return True, ""
 
     async def reject_order(self, order_id: int, admin_id: int) -> bool:
