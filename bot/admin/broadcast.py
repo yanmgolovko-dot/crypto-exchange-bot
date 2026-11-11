@@ -50,20 +50,21 @@ async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(BroadcastStates.waiting_for_message)
 async def broadcast_message_received(message: Message, state: FSMContext):
-    # Сохраняем текст
-    await state.update_data(text=message.text, html=message.html_text)
-    # Получаем количество пользователей
+    # Берем именно сырой текст, чтобы сохранить теги, которые ввел админ
+    text_to_send = message.text if message.text else message.caption
+    await state.update_data(text=text_to_send)
+    
     users = await db.get_all_users()
     total = len(users)
     await state.update_data(total_users=total)
-    # Показываем предпросмотр
-    text = (
+    
+    preview = (
         f"📢 <b>Предпросмотр рассылки</b>\n\n"
-        f"{message.html_text}\n\n"
+        f"{text_to_send}\n\n"
         f"Будет отправлено <b>{total}</b> пользователям.\n\n"
         f"Подтвердите отправку:"
     )
-    await message.answer(text, reply_markup=broadcast_keyboard(), parse_mode="HTML")
+    await message.answer(preview, reply_markup=broadcast_keyboard(), parse_mode="HTML")
     await state.set_state(BroadcastStates.waiting_for_confirmation)
 
 
@@ -72,7 +73,6 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot
     admin_id = callback.from_user.id
     data = await state.get_data()
     text = data['text']
-    html_text = data['html']
     total = data['total_users']
 
     await safe_edit_message(callback.message, "🔄 Начинаю рассылку...")
@@ -81,11 +81,13 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot
     users = await db.get_all_users()
     sent = 0
     failed = 0
+    
     for user in users:
         try:
-            await bot.send_message(user.user_id, html_text, parse_mode="HTML")
+            # Отправляем с parse_mode="HTML"
+            await bot.send_message(user.user_id, text, parse_mode="HTML", disable_web_page_preview=True)
             sent += 1
-            await asyncio.sleep(0.05)  # небольшая задержка, чтобы не флудить
+            await asyncio.sleep(0.05) 
         except Exception as e:
             logger.warning(f"Не удалось отправить сообщение пользователю {user.user_id}: {e}")
             failed += 1
@@ -98,7 +100,6 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot
     )
     await safe_edit_message(callback.message, result_text, parse_mode="HTML")
 
-    # Уведомляем админов
     await notify_admins(
         bot,
         f"🔔 Администратор {admin_id} провёл рассылку.\n"
