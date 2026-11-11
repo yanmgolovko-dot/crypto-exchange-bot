@@ -76,7 +76,8 @@ async def cmd_start(message: Message, state: FSMContext, user_service: UserServi
             username=username,
             first_name=first_name,
             last_name=message.from_user.last_name,
-            referred_by=referred_by
+            referred_by=referred_by,
+            bot=message.bot  # <-- ДОБАВЛЕНО СЮДА
         )
         await coupon_service.give_welcome_coupon(user_id)
 
