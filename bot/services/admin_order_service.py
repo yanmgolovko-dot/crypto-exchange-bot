@@ -66,9 +66,14 @@ class AdminOrderService:
             await self.db.update_order_status(order_id, 'paid', 'Нет кошельков, блокировка снята')
             return {'success': False, 'error': f'Нет активных кошельков {order.crypto_type}'}
 
-        fee_estimate = 0.001 if order.crypto_type == 'LTC' else 0.0001
+        # --- ИСПРАВЛЕНИЕ: Берем актуальную комиссию из сервиса кошельков ---
+        if order.crypto_type == 'LTC':
+            fee_estimate = self.wallet_manager.ltc.FEE_SAT / 1e8
+        else:
+            fee_estimate = self.wallet_manager.btc.FEE_SAT / 1e8
+            
         required_amount = order.amount_crypto + fee_estimate
-        logger.debug(f"Необходимая сумма с учётом комиссии: {required_amount} {order.crypto_type}")
+        logger.debug(f"Необходимая сумма с учётом комиссии ({fee_estimate} {order.crypto_type}): {required_amount} {order.crypto_type}")
 
         selected_wallet = None
         for wallet in wallets:
@@ -176,12 +181,6 @@ class AdminOrderService:
     ) -> Tuple[bool, str]:
         """
         Завершает заявку с валидированным хешем.
-
-        ВАЖНО: если хеш не прошёл валидацию или заявка не в статусе 'processing',
-        заявка НЕ переводится в 'completed', финансовая запись НЕ создаётся,
-        клиент и партнёры НЕ уведомляются.
-
-        :return: (ok, error_message). При ok=True error_message == "".
         """
         logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
 
