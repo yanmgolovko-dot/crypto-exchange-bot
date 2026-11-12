@@ -31,8 +31,8 @@ class BitcoinServiceBlockCypher:
     """Сервис для работы с Bitcoin через BlockCypher API (не требует Electrum)."""
 
     API_URL = "https://api.blockcypher.com/v1/btc/main"
-    # Фиксированная комиссия сети для BTC: 0.0001 BTC = 10 000 sat
-    FEE_SAT = 10000
+    # Фиксированная комиссия сети для BTC: 0.000005 BTC = 5 000 sat
+    FEE_SAT = 5000
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -56,7 +56,7 @@ class BitcoinServiceBlockCypher:
             async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    balance_sat = data.get("balance", 0)
+                    balance_sat = data.get("final_balance", 0)  # используем final_balance, чтобы видеть и неподтвержденные
                     if isinstance(balance_sat, str):
                         balance_sat = int(balance_sat)
                     return balance_sat / 1e8
@@ -97,7 +97,7 @@ class BitcoinServiceBlockCypher:
         Отправить BTC через BlockCypher:
         1. Получить UTXO для адреса отправителя.
         2. Создать и подписать транзакцию через bitcoinlib с фиксированной
-           комиссией 0.0001 BTC и явным выходом для сдачи.
+           комиссией 0.000005 BTC и явным выходом для сдачи.
         3. Отправить через BlockCypher API (метод push tx).
         """
         if not BITCOINLIB_AVAILABLE:
@@ -216,7 +216,7 @@ class LitecoinServiceBlockCypher:
             async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    balance_sat = data.get("balance", 0)
+                    balance_sat = data.get("final_balance", 0)  # используем final_balance
                     return balance_sat / 1e8
                 else:
                     return 0.0
@@ -378,10 +378,10 @@ class CryptoWalletManager:
         try:
             if crypto_type == 'BTC':
                 balance = await self.btc.get_balance(wallet.address)
-                required = amount + 0.0001
+                required = amount + (self.btc.FEE_SAT / 1e8)
             elif crypto_type == 'LTC':
                 balance = await self.ltc.get_balance(wallet.address)
-                required = amount + 0.001
+                required = amount + (self.ltc.FEE_SAT / 1e8)
             else:
                 return False, 0.0
             return balance >= required, balance
