@@ -27,7 +27,7 @@ async def get_user_profile_keyboard(user_id: int):
     kb = InlineKeyboardBuilder()
 
     kb.button(text="📊 Статистика", callback_data="user_stats")
-    kb.button(text="💰 Бонусы", callback_data="user_bonus")
+    kb.button(text="💰 Балансы", callback_data="user_bonus") # <-- Переименовали кнопку
 
     kb.button(text="📋 Мои заявки", callback_data="user_orders")
     kb.button(text="🎫 Купоны", callback_data="user_my_coupons")
@@ -88,6 +88,10 @@ async def cmd_profile(message: Message):
         return
 
     stats = await db.get_user_stats(user_id)
+    
+    # Получаем партнерский баланс
+    partner = await db.partners.get_partner(user_id)
+    partner_balance = partner.balance if partner else 0.0
 
     text = (
         f"👤 <b>Личный кабинет</b>\n\n"
@@ -99,8 +103,9 @@ async def cmd_profile(message: Message):
         f"   Всего обменов: {stats['total_orders']}\n"
         f"   Общий объем: {stats['total_volume']:,.0f} ₽\n"
         f"   Сэкономлено: {stats['total_saved']:,.0f} ₽\n\n"
-        f"<b>Бонусы:</b>\n"
-        f"   Баланс: {user.bonus_balance:,.0f} ₽\n\n"
+        f"<b>Балансы:</b>\n"
+        f"   🤝 Партнерский: <b>{partner_balance:,.2f} ₽</b>\n"
+        f"   🎁 Бонусный: <b>{user.bonus_balance:,.2f} ₽</b>\n\n"
     )
 
     if user.referral_code:
@@ -202,23 +207,33 @@ async def user_stats(callback: CallbackQuery):
 async def user_bonus(callback: CallbackQuery):
     user_id = callback.from_user.id
     user = await db.get_user(user_id)
+    partner = await db.partners.get_partner(user_id)
+    
     if not user:
         await callback.answer("❌ Ошибка загрузки данных", show_alert=True)
         return
+        
+    partner_balance = partner.balance if partner else 0.0
+
     text = (
-        f"💰 <b>Бонусный баланс</b>\n\n"
-        f"Текущий баланс: <b>{user.bonus_balance:,.0f} ₽</b>\n\n"
-        f"<b>Как заработать бонусы?</b>\n"
+        f"💰 <b>Ваши балансы</b>\n\n"
+        f"🤝 <b>Партнерский баланс:</b> <b>{partner_balance:,.2f} ₽</b>\n"
+        f"<i>(Начисляется за обмены ваших рефералов)</i>\n\n"
+        f"🎁 <b>Бонусный баланс:</b> <b>{user.bonus_balance:,.2f} ₽</b>\n"
+        f"<i>(Начисляется за победы в Колесе Фортуны)</i>\n\n"
+        f"<b>Как заработать больше?</b>\n"
         f"• Приглашайте друзей по реферальной ссылке\n"
         f"• Используйте промокоды\n"
-        f"• Совершайте обмены\n\n"
-        f"<b>Как использовать?</b>\n"
-        f"Бонусы автоматически применяются при обмене и уменьшают комиссию."
+        f"• Совершайте обмены\n"
     )
+    
     keyboard = InlineKeyboardBuilder()
+    if partner and partner.is_active:
+        keyboard.button(text="🤝 Партнёрский кабинет", callback_data="user_partner_cabinet")
     keyboard.button(text="🔗 Реферальная программа", callback_data="user_referral")
     keyboard.button(text="🔙 Назад", callback_data="user_back_profile")
     keyboard.adjust(1)
+    
     await safe_edit_message(callback.message, text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
@@ -328,7 +343,7 @@ async def user_referral(callback: CallbackQuery):
         f"<b>Код:</b> <code>{escape_html(ref_code)}</code>\n"
         f"<b>Ссылка:</b>\n<code>{escape_html(referral_link)}</code>\n\n"
         f"📲 Покажите QR-код другу — он сразу попадёт в бота как ваш реферал.\n\n"
-        f"💰 Получайте <b>1%</b> с каждого обмена приглашённых."
+        f"💰 Получайте <b>до 10%</b> с каждого обмена приглашённых."
     )
 
     kb = InlineKeyboardBuilder()
@@ -339,7 +354,6 @@ async def user_referral(callback: CallbackQuery):
     kb.button(text="🔙 Назад", callback_data="user_back_profile")
     kb.adjust(1)
 
-    # Пытаемся удалить старое сообщение (если callback пришёл из текстового меню)
     try:
         await callback.message.delete()
     except Exception:
@@ -355,7 +369,6 @@ async def user_referral(callback: CallbackQuery):
             parse_mode="HTML",
         )
     else:
-        # Fallback: если QR-библиотека недоступна
         await callback.message.answer(
             caption,
             reply_markup=kb.as_markup(),
