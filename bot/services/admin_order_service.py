@@ -27,7 +27,8 @@ class AdminOrderService:
         self,
         order_id: int,
         admin_id: int,
-        bot: Bot
+        bot: Bot,
+        force_fee_sat: int = None
     ) -> Dict[str, Any]:
         """
         Подтверждение заявки в автоматическом режиме.
@@ -40,16 +41,32 @@ class AdminOrderService:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
             return {'success': False, 'error': 'Заявка не найдена'}
 
-        if order.status != 'paid':
-            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} имеет статус {order.status}, требуется paid")
+        if order.status not in ('paid', 'waiting_network_fee'):
+            logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} имеет статус {order.status}, требуется paid или waiting_network_fee")
             return {'success': False, 'error': f'Заявка не в статусе "оплачена". Текущий статус: {order.status}'}
+
+        # ПРОВЕРКА КОМИССИИ СЕТИ (если не принудительная отправка)
+        if not force_fee_sat:
+            if order.crypto_type == 'BTC':
+                current_fee = await self.wallet_manager.btc.get_recommended_fee()
+                max_fee = self.wallet_manager.btc.MAX_FEE_SAT
+            elif order.crypto_type == 'LTC':
+                current_fee = await self.wallet_manager.ltc.get_recommended_fee()
+                max_fee = self.wallet_manager.ltc.MAX_FEE_SAT
+            else:
+                current_fee, max_fee = 0, 0
+
+            if current_fee > max_fee:
+                logger.info(f"[ADMIN {admin_id}] Комиссия сети ({current_fee} sat) выше лимита ({max_fee} sat). Заявка в очередь.")
+                await self.db.update_order_status(order_id, 'waiting_network_fee', f'Ожидание комиссии (сейчас {current_fee} sat, нужно ≤ {max_fee})')
+                return {'success': True, 'queued': True, 'message': f'Сеть перегружена (комиссия {current_fee} sat, лимит {max_fee} sat). Заявка в очереди.'}
 
         # Атомарно пытаемся заблокировать заявку (обновить статус на processing)
         async with self.db.uow() as uow:
             cursor = await uow._connection.conn.execute("""
                 UPDATE exchange_orders
                 SET status = 'processing'
-                WHERE id = ? AND status = 'paid'
+                WHERE id = ? AND status IN ('paid', 'waiting_network_fee')
                 RETURNING id
             """, (order_id,))
             row = await cursor.fetchone()
@@ -66,11 +83,11 @@ class AdminOrderService:
             await self.db.update_order_status(order_id, 'paid', 'Нет кошельков, блокировка снята')
             return {'success': False, 'error': f'Нет активных кошельков {order.crypto_type}'}
 
-        # --- ИСПРАВЛЕНИЕ: Берем актуальную комиссию из сервиса кошельков ---
-        if order.crypto_type == 'LTC':
-            fee_estimate = self.wallet_manager.ltc.FEE_SAT / 1e8
+        # Резервируем максимальную комиссию для проверки баланса
+        if force_fee_sat:
+            fee_estimate = force_fee_sat / 1e8
         else:
-            fee_estimate = self.wallet_manager.btc.FEE_SAT / 1e8
+            fee_estimate = (self.wallet_manager.btc.MAX_FEE_SAT if order.crypto_type == 'BTC' else self.wallet_manager.ltc.MAX_FEE_SAT) / 1e8
             
         required_amount = order.amount_crypto + fee_estimate
         logger.debug(f"Необходимая сумма с учётом комиссии ({fee_estimate} {order.crypto_type}): {required_amount} {order.crypto_type}")
@@ -100,7 +117,8 @@ class AdminOrderService:
             crypto_type=order.crypto_type,
             to_address=order.crypto_address,
             amount=order.amount_crypto,
-            wallet=selected_wallet
+            wallet=selected_wallet,
+            force_fee_sat=force_fee_sat
         )
 
         if not tx_result['success']:
@@ -144,7 +162,6 @@ class AdminOrderService:
     async def approve_order_manual(self, order_id: int, admin_id: int) -> bool:
         """
         Ручное подтверждение оплаты: переводит заявку из 'paid' в 'processing'.
-        Дальше админ вводит хеш транзакции и заявка завершается.
         """
         logger.info(f"[ADMIN {admin_id}] Ручное подтверждение заявки #{order_id}")
         order = await self.db.get_order(order_id)
@@ -193,7 +210,7 @@ class AdminOrderService:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} уже завершена")
             return False, "Заявка уже завершена"
 
-        # 1) Валидация и сохранение хеша (проверяет статус processing + формат)
+        # 1) Валидация и сохранение хеша
         ok, err = await self.db.orders.update_order_tx_hash_checked(order_id, tx_hash, admin_id)
         if not ok:
             logger.warning(

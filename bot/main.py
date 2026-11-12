@@ -9,7 +9,6 @@ import time
 from datetime import datetime
 import traceback
 
-# ========== НАСТРОЙКА ЛОГГЕРА СРАЗУ ПОСЛЕ ИМПОРТА СТАНДАРТНЫХ БИБЛИОТЕК ==========
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(
     level=logging.DEBUG,
@@ -21,14 +20,12 @@ logging.basicConfig(
 )
 logging.getLogger().debug("🔧 Базовая настройка логгера выполнена")
 
-# Импорты aiogram
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, Update
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.default import DefaultBotProperties
 
-# Импорты модулей проекта
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config.settings import config
@@ -48,17 +45,14 @@ from bot.services.expire_service import ExpireService
 from bot.handlers import router as user_router
 from bot.admin import router as admin_router
 
-# Новые middleware
 from bot.middlewares.rate_limit import RateLimitMiddleware
 from bot.middlewares.error_handler import global_error_handler
 
-# Отключаем буферизацию stdout для Windows
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(line_buffering=True)
 
 logger = logging.getLogger(__name__)
 
-# Метка старта процесса — нужна для /health (uptime)
 PROCESS_START_TIME = time.time()
 
 print("🔧 Создание сессии бота...")
@@ -66,7 +60,6 @@ session = AiohttpSession(timeout=300)
 bot = Bot(token=config.BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-# ==================== ОТЛАДОЧНАЯ МИДЛВАРЬ ДЛЯ ЛОГГИРОВАНИЯ АПДЕЙТОВ ====================
 @dp.update.outer_middleware()
 async def log_updates(handler, event: Update, data):
     logger.info(f"📩 Получен апдейт ID: {event.update_id}")
@@ -86,7 +79,6 @@ admin_wallet_service = AdminWalletService(db, wallet_manager)
 admin_finance_service = AdminFinanceService(db)
 expire_service = ExpireService(db)
 
-# ==================== МИДЛВАРЬ ДЛЯ ПРОКИДЫВАНИЯ ЗАВИСИМОСТЕЙ ====================
 async def services_middleware(handler, event, data):
     data['db'] = db
     data['crypto_api'] = crypto_api
@@ -102,7 +94,6 @@ async def services_middleware(handler, event, data):
     data['bot'] = bot
     return await handler(event, data)
 
-# ==================== МИДЛВАРИ ДЛЯ ПРОВЕРКИ БАНА И АКТИВНОСТИ ====================
 async def check_banned_middleware(handler, event, data):
     if isinstance(event, (Message, CallbackQuery)):
         user_id = event.from_user.id
@@ -129,12 +120,6 @@ async def update_activity_middleware(handler, event, data):
         asyncio.create_task(db.users.update_last_activity(user_id))
     return await handler(event, data)
 
-# Регистрируем мидлвари.
-# Порядок важен: middleware выполняются в порядке регистрации (FIFO).
-# 1) rate_limit — отсекаем спам до обращения к БД
-# 2) services — прокидываем зависимости
-# 3) check_banned — проверка бана (требует user_service из services)
-# 4) update_activity — пишем активность
 rate_limit_middleware = RateLimitMiddleware(max_requests=20, window_seconds=60)
 
 dp.message.middleware(rate_limit_middleware)
@@ -149,23 +134,15 @@ dp.callback_query.middleware(check_banned_middleware)
 dp.message.middleware(update_activity_middleware)
 dp.callback_query.middleware(update_activity_middleware)
 
-# ==================== ГЛОБАЛЬНЫЙ ERROR HANDLER ====================
 dp.errors.register(global_error_handler)
 
 dp.include_router(admin_router)
 dp.include_router(user_router)
 
-
-# ==================== ФОНОВЫЙ ВОРКЕР НАПОМИНАНИЙ ====================
 async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentService):
-    """
-    Фоновая задача для отправки напоминаний о неоплаченных заявках.
-    Проверяет настройку reminders_enabled – если отключено, ничего не делает.
-    """
     logger.info("Запуск воркера напоминаний")
     while True:
         try:
-            # Проверяем, включены ли напоминания
             reminders_enabled = await db.settings.get_reminders_enabled()
             if not reminders_enabled:
                 await asyncio.sleep(60)
@@ -173,7 +150,6 @@ async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentServic
 
             orders = await db.orders.get_pending_orders_for_reminder(minutes=5, max_reminders=3)
             for order in orders:
-                # Пытаемся отправить до 3 раз с экспоненциальной задержкой
                 for attempt in range(3):
                     try:
                         logger.info(f"Отправка напоминания по заявке #{order.id} пользователю {order.user_id} (попытка {attempt+1})")
@@ -189,22 +165,14 @@ async def reminder_worker(bot: Bot, db: Database, payment_service: PaymentServic
                         if attempt == 2:
                             logger.error(f"Все попытки для заявки #{order.id} исчерпаны")
                         else:
-                            wait = 2 ** attempt  # экспоненциальная задержка: 1, 2, 4 секунды
-                            await asyncio.sleep(wait)
-                await asyncio.sleep(1)  # пауза между разными заявками
+                            await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(1)
         except Exception as e:
             logger.exception(f"Критическая ошибка в воркере напоминаний: {e}")
         await asyncio.sleep(60)
 
-
-# ==================== ФОНОВЫЙ ВОРКЕР АВТООТМЕНЫ ПРОСРОЧЕННЫХ ЗАЯВОК ====================
 async def expire_worker(bot: Bot, expire_service: ExpireService):
-    """
-    Раз в 15 минут ищет pending-заявки старше order_ttl_hours
-    и переводит их в cancelled.
-    """
     logger.info("Запуск воркера автоотмены просроченных заявок")
-    # Небольшая задержка на старте, чтобы не конкурировать с инициализацией БД
     await asyncio.sleep(30)
     while True:
         try:
@@ -213,8 +181,40 @@ async def expire_worker(bot: Bot, expire_service: ExpireService):
                 logger.info(f"Автоотмена: отменено {count} просроченных заявок")
         except Exception as e:
             logger.exception(f"Критическая ошибка в воркере автоотмены: {e}")
-        await asyncio.sleep(15 * 60)  # 15 минут
+        await asyncio.sleep(15 * 60)
 
+async def network_fee_worker(bot: Bot, admin_order_service: AdminOrderService):
+    """Фоновый воркер, который проверяет заявки в очереди (waiting_network_fee)."""
+    logger.info("Запуск воркера ожидания комиссии сети")
+    await asyncio.sleep(60)
+    while True:
+        try:
+            async with db.uow() as uow:
+                cursor = await uow._connection.conn.execute("SELECT id, admin_checked_by FROM exchange_orders WHERE status = 'waiting_network_fee'")
+                rows = await cursor.fetchall()
+
+            if rows:
+                btc_fee = await wallet_manager.btc.get_recommended_fee()
+                ltc_fee = await wallet_manager.ltc.get_recommended_fee()
+                
+                for row in rows:
+                    order_id, admin_id = row[0], row[1] or 0
+                    order = await db.get_order(order_id)
+                    if not order: continue
+
+                    if order.crypto_type == 'BTC' and btc_fee <= wallet_manager.btc.MAX_FEE_SAT:
+                        res = await admin_order_service.approve_order_auto(order_id, admin_id, bot, force_fee_sat=btc_fee)
+                    elif order.crypto_type == 'LTC' and ltc_fee <= wallet_manager.ltc.MAX_FEE_SAT:
+                        res = await admin_order_service.approve_order_auto(order_id, admin_id, bot, force_fee_sat=ltc_fee)
+                    else:
+                        continue
+
+                    if res.get('success'):
+                        try: await bot.send_message(admin_id, f"✅ Заявка #{order_id} отправлена из очереди! (Сеть: {btc_fee if order.crypto_type=='BTC' else ltc_fee} sat)")
+                        except: pass
+        except Exception as e:
+            logger.error(f"Ошибка в воркере комиссии: {e}")
+        await asyncio.sleep(600)
 
 async def on_startup():
     print("🟢 on_startup: начало")
@@ -233,7 +233,6 @@ async def on_startup():
     logger.info("[OK] Подключение к базе данных установлено")
     print("🟢 Подключение к БД выполнено")
 
-    # Получаем уровень логирования из БД через сервис
     print("🟢 Чтение уровня логирования из БД...")
     try:
         if hasattr(db, 'get_log_level'):
@@ -249,11 +248,9 @@ async def on_startup():
         db_log_level = "INFO"
     print(f"🟢 Уровень логирования из БД (через сервис): {db_log_level}")
 
-    # Применяем уровень к корневому логгеру
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Устанавливаем уровни для шумных библиотек
     logging.getLogger('aiogram').setLevel(logging.WARNING)
     logging.getLogger('aiohttp').setLevel(logging.WARNING)
     logging.getLogger('aiosqlite').setLevel(logging.WARNING)
@@ -270,7 +267,6 @@ async def on_startup():
     logger.info(f"[TIME] Время загрузки: {elapsed:.2f} секунд")
     print(f"🟢 Время загрузки: {elapsed:.2f} сек")
 
-    # Игнорируем отправку самому себе (боту)
     bot_id = (await bot.get_me()).id
     for admin_id in config.ADMIN_IDS:
         if admin_id == bot_id:
@@ -293,13 +289,11 @@ async def on_startup():
 
     print("🟢 on_startup завершён")
 
-
 async def on_shutdown():
     logger.info("Остановка бота...")
     await wallet_manager.close()
     await crypto_api.close()
     await db.close()
-
 
 async def main():
     print("🟢 main: запуск...")
@@ -327,6 +321,7 @@ async def main():
 
     asyncio.create_task(reminder_worker(bot, db, payment_service))
     asyncio.create_task(expire_worker(bot, expire_service))
+    asyncio.create_task(network_fee_worker(bot, admin_order_service))
 
     try:
         print("🟢 Запуск polling с skip_updates=True...")
@@ -337,7 +332,6 @@ async def main():
         traceback.print_exc()
     finally:
         await on_shutdown()
-
 
 if __name__ == "__main__":
     try:

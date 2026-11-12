@@ -31,8 +31,8 @@ class BitcoinServiceBlockCypher:
     """Сервис для работы с Bitcoin через BlockCypher API (не требует Electrum)."""
 
     API_URL = "https://api.blockcypher.com/v1/btc/main"
-    # Фиксированная комиссия сети для BTC: 0.000005 BTC = 5 000 sat
-    FEE_SAT = 5000
+    # Максимальная комиссия сети для BTC: 0.00000700 BTC = 7 000 sat
+    MAX_FEE_SAT = 7000
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -56,7 +56,7 @@ class BitcoinServiceBlockCypher:
             async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    balance_sat = data.get("final_balance", 0)  # используем final_balance, чтобы видеть и неподтвержденные
+                    balance_sat = data.get("final_balance", 0)
                     if isinstance(balance_sat, str):
                         balance_sat = int(balance_sat)
                     return balance_sat / 1e8
@@ -92,14 +92,21 @@ class BitcoinServiceBlockCypher:
             logger.error(f"Ошибка получения UTXO: {e}")
             return []
 
-    async def send_transaction(self, from_privkey_wif: str, to_address: str, amount_btc: float) -> str:
-        """
-        Отправить BTC через BlockCypher:
-        1. Получить UTXO для адреса отправителя.
-        2. Создать и подписать транзакцию через bitcoinlib с фиксированной
-           комиссией 0.000005 BTC и явным выходом для сдачи.
-        3. Отправить через BlockCypher API (метод push tx).
-        """
+    async def get_recommended_fee(self) -> int:
+        """Запрашивает актуальную комиссию сети."""
+        try:
+            session = await self._get_session()
+            async with session.get(self.API_URL, params={"token": self.api_token}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    fee_per_kb = data.get("high_fee_per_kb", 20000)
+                    return max(int((fee_per_kb / 1000) * 300), 2000)
+        except Exception as e:
+            logger.error(f"Ошибка получения рекомендуемой комиссии: {e}")
+        return self.MAX_FEE_SAT
+
+    async def send_transaction(self, from_privkey_wif: str, to_address: str, amount_btc: float, force_fee_sat: int = None) -> str:
+        """Отправить BTC через BlockCypher с динамической комиссией."""
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
 
@@ -121,8 +128,11 @@ class BitcoinServiceBlockCypher:
 
         amount_sat = int(round(amount_btc * 1e8))
 
-        # Собираем inputs и параллельно считаем их сумму.
-        t = Transaction(network='bitcoin', fee=self.FEE_SAT)
+        # Используем принудительную комиссию или запрашиваем динамическую
+        fee_sat = force_fee_sat if force_fee_sat is not None else await self.get_recommended_fee()
+        logger.info(f"Используемая комиссия сети: {fee_sat} satoshis")
+
+        t = Transaction(network='bitcoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
             t.add_input(
@@ -133,26 +143,20 @@ class BitcoinServiceBlockCypher:
             )
             total_input_sat += utxo["satoshis"]
 
-        change_sat = total_input_sat - amount_sat - self.FEE_SAT
+        change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
-                f"{amount_sat + self.FEE_SAT} sat, доступно {total_input_sat} sat"
+                f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
 
-        # Основной выход получателю
         t.add_output(address=to_address, value=amount_sat)
 
-        # Явный выход для сдачи. Без этого вся разница между суммой inputs
-        # и выходом получателя уйдёт майнеру как «комиссия».
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
             logger.info(f"Добавлена сдача: {change_sat} sat на {from_address}")
         elif change_sat > 0:
-            logger.info(
-                f"Сдача {change_sat} sat ≤ dust-порога ({_DUST_SAT} sat) — "
-                f"уходит в комиссию майнеру"
-            )
+            logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
 
@@ -161,14 +165,9 @@ class BitcoinServiceBlockCypher:
         if not t.verify():
             raise Exception("Transaction verification failed")
 
-        # После подписи проверяем фактический баланс транзакции
         total_out_sat = sum(o.value for o in t.outputs)
         actual_fee_sat = total_input_sat - total_out_sat
-        logger.info(
-            f"Транзакция подписана и верифицирована: "
-            f"inputs={total_input_sat} sat, outputs={total_out_sat} sat, "
-            f"фактическая комиссия={actual_fee_sat} sat"
-        )
+        logger.info(f"Транзакция подписана: inputs={total_input_sat} sat, outputs={total_out_sat} sat, комиссия={actual_fee_sat} sat")
 
         tx_hex = t.raw_hex()
         logger.info(f"raw_hex длина: {len(tx_hex)}")
@@ -192,8 +191,8 @@ class LitecoinServiceBlockCypher:
     """Сервис для работы с Litecoin через BlockCypher API."""
 
     API_URL = "https://api.blockcypher.com/v1/ltc/main"
-    # Фиксированная комиссия сети для LTC: 0.001 LTC = 100 000 sat
-    FEE_SAT = 100000
+    # Максимальная комиссия сети для LTC: 0.00030000 LTC = 30 000 sat
+    MAX_FEE_SAT = 30000
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -216,7 +215,7 @@ class LitecoinServiceBlockCypher:
             async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    balance_sat = data.get("final_balance", 0)  # используем final_balance
+                    balance_sat = data.get("final_balance", 0)
                     return balance_sat / 1e8
                 else:
                     return 0.0
@@ -247,7 +246,19 @@ class LitecoinServiceBlockCypher:
             logger.error(f"Ошибка получения UTXO: {e}")
             return []
 
-    async def send_transaction(self, from_privkey_wif: str, to_address: str, amount_ltc: float) -> str:
+    async def get_recommended_fee(self) -> int:
+        try:
+            session = await self._get_session()
+            async with session.get(self.API_URL, params={"token": self.api_token}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    fee_per_kb = data.get("high_fee_per_kb", 100000)
+                    return max(int((fee_per_kb / 1000) * 300), 10000)
+        except Exception as e:
+            logger.error(f"Ошибка получения рекомендуемой комиссии LTC: {e}")
+        return self.MAX_FEE_SAT
+
+    async def send_transaction(self, from_privkey_wif: str, to_address: str, amount_ltc: float, force_fee_sat: int = None) -> str:
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
 
@@ -269,8 +280,10 @@ class LitecoinServiceBlockCypher:
 
         amount_sat = int(round(amount_ltc * 1e8))
 
-        # Собираем inputs и параллельно считаем их сумму.
-        t = Transaction(network='litecoin', fee=self.FEE_SAT)
+        fee_sat = force_fee_sat if force_fee_sat is not None else await self.get_recommended_fee()
+        logger.info(f"Используемая комиссия сети (LTC): {fee_sat} satoshis")
+
+        t = Transaction(network='litecoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
             t.add_input(
@@ -281,26 +294,20 @@ class LitecoinServiceBlockCypher:
             )
             total_input_sat += utxo["satoshis"]
 
-        change_sat = total_input_sat - amount_sat - self.FEE_SAT
+        change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
-                f"{amount_sat + self.FEE_SAT} sat, доступно {total_input_sat} sat"
+                f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
 
-        # Основной выход получателю
         t.add_output(address=to_address, value=amount_sat)
 
-        # Явный выход для сдачи. Без этого вся разница между суммой inputs
-        # и выходом получателя уйдёт майнеру как «комиссия».
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
             logger.info(f"Добавлена сдача: {change_sat} sat на {from_address}")
         elif change_sat > 0:
-            logger.info(
-                f"Сдача {change_sat} sat ≤ dust-порога ({_DUST_SAT} sat) — "
-                f"уходит в комиссию майнеру"
-            )
+            logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
 
@@ -309,14 +316,9 @@ class LitecoinServiceBlockCypher:
         if not t.verify():
             raise Exception("Transaction verification failed")
 
-        # После подписи проверяем фактический баланс транзакции
         total_out_sat = sum(o.value for o in t.outputs)
         actual_fee_sat = total_input_sat - total_out_sat
-        logger.info(
-            f"Транзакция подписана и верифицирована: "
-            f"inputs={total_input_sat} sat, outputs={total_out_sat} sat, "
-            f"фактическая комиссия={actual_fee_sat} sat"
-        )
+        logger.info(f"Транзакция подписана: inputs={total_input_sat} sat, outputs={total_out_sat} sat, комиссия={actual_fee_sat} sat")
 
         tx_hex = t.raw_hex()
         logger.info(f"raw_hex длина: {len(tx_hex)}")
@@ -378,10 +380,10 @@ class CryptoWalletManager:
         try:
             if crypto_type == 'BTC':
                 balance = await self.btc.get_balance(wallet.address)
-                required = amount + (self.btc.FEE_SAT / 1e8)
+                required = amount + (self.btc.MAX_FEE_SAT / 1e8)
             elif crypto_type == 'LTC':
                 balance = await self.ltc.get_balance(wallet.address)
-                required = amount + (self.ltc.FEE_SAT / 1e8)
+                required = amount + (self.ltc.MAX_FEE_SAT / 1e8)
             else:
                 return False, 0.0
             return balance >= required, balance
@@ -391,7 +393,8 @@ class CryptoWalletManager:
 
     async def send_transaction_real(self, order_id: int, crypto_type: str,
                                     to_address: str, amount: float,
-                                    wallet: Optional[Wallet] = None) -> Dict:
+                                    wallet: Optional[Wallet] = None,
+                                    force_fee_sat: int = None) -> Dict:
         logger.info(f"Запуск отправки криптовалюты по заявке #{order_id}, сумма {amount} {crypto_type}")
         if wallet is None:
             wallet = await db.get_wallet(crypto_type=crypto_type)
@@ -427,9 +430,9 @@ class CryptoWalletManager:
         for attempt in range(max_retries):
             try:
                 if crypto_type == 'BTC':
-                    txid = await self.btc.send_transaction(private_key_wif, to_address, amount)
+                    txid = await self.btc.send_transaction(private_key_wif, to_address, amount, force_fee_sat)
                 elif crypto_type == 'LTC':
-                    txid = await self.ltc.send_transaction(private_key_wif, to_address, amount)
+                    txid = await self.ltc.send_transaction(private_key_wif, to_address, amount, force_fee_sat)
                 else:
                     return {'success': False, 'error': f'Неподдерживаемый тип: {crypto_type}'}
 

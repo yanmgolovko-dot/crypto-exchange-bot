@@ -18,7 +18,7 @@ from bot.services.payment_service import PaymentService
 from bot.services.order_service import OrderService
 from bot.services.admin_order_service import AdminOrderService
 from bot.services.coupon_service import coupon_service
-from bot.services.review_notifier import ask_for_review  # <-- ДОБАВЛЕН ИМПОРТ
+from bot.services.review_notifier import ask_for_review
 from bot.keyboards import admin_order_keyboard, manual_pending_keyboard, auto_pending_keyboard, receipt_received_keyboard
 from bot.admin.main import is_admin, notify_admins, send_receipt
 from bot.admin.states import AdminStates
@@ -27,13 +27,11 @@ from bot.config.settings import config
 logger = logging.getLogger(__name__)
 router = Router()
 
-
 def _tx_hash_hint(crypto_type: str) -> str:
     cur = (crypto_type or "").upper()
     if cur in {"BTC", "LTC", "USDT", "TRX", "BCH", "DOGE", "DASH"}:
         return f"{cur} — ровно 64 hex-символа"
     return f"{cur} — минимум 32 hex-символа"
-
 
 def get_explorer_url(crypto_type: str, tx_hash: str) -> Optional[str]:
     if not tx_hash or tx_hash == 'N/A':
@@ -46,7 +44,6 @@ def get_explorer_url(crypto_type: str, tx_hash: str) -> Optional[str]:
     elif cur in ['USDT', 'TRX']:
         return f"https://tronscan.org/#/transaction/{tx_hash}"
     return None
-
 
 @router.callback_query(F.data == "admin_orders_menu")
 async def admin_orders_menu(callback: CallbackQuery):
@@ -71,7 +68,6 @@ async def admin_orders_menu(callback: CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
-
 
 @router.callback_query(F.data == "admin_orders_pending")
 async def admin_orders_pending(callback: CallbackQuery):
@@ -105,7 +101,6 @@ async def admin_orders_pending(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_orders_paid")
 async def admin_orders_paid(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -114,7 +109,7 @@ async def admin_orders_paid(callback: CallbackQuery):
         return
 
     orders = await db.get_pending_orders()
-    paid_orders = [o for o in orders if o.status == 'paid']
+    paid_orders = [o for o in orders if o.status in ('paid', 'waiting_network_fee')]
 
     if not paid_orders:
         await callback.answer("Нет заявок на проверке", show_alert=True)
@@ -125,10 +120,11 @@ async def admin_orders_paid(callback: CallbackQuery):
 
     for order in paid_orders[:10]:
         safe_username = html.escape(order.username) if order.username else 'N/A'
+        status_str = "⏳ В очереди (ждет комиссию)" if order.status == 'waiting_network_fee' else "💳 На проверке"
         text += (
             f"<b>#{order.public_order_number or order.id}</b> | @{safe_username}\n"
             f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f} {order.crypto_type}\n"
-            f"   Тип: {order.order_type or 'shop'}\n\n"
+            f"   Статус: {status_str}\n\n"
         )
         keyboard.button(text=f"Проверить #{order.public_order_number or order.id}", callback_data=f"admin_order_check_{order.id}")
 
@@ -137,7 +133,6 @@ async def admin_orders_paid(callback: CallbackQuery):
 
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
-
 
 @router.callback_query(F.data == "admin_orders_completed")
 async def admin_orders_completed(callback: CallbackQuery):
@@ -168,7 +163,6 @@ async def admin_orders_completed(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_orders_cancelled")
 async def admin_orders_cancelled(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -198,7 +192,6 @@ async def admin_orders_cancelled(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_orders_search")
 async def admin_orders_search(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -209,7 +202,6 @@ async def admin_orders_search(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.searching_order)
     await callback.message.answer("🔍 Введите номер заявки (ID):")
     await callback.answer()
-
 
 @router.message(AdminStates.searching_order)
 async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bot):
@@ -275,7 +267,6 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
     await message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await state.clear()
 
-
 @router.callback_query(F.data == "admin_orders_clear_all")
 async def admin_orders_clear_confirm(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -298,7 +289,6 @@ async def admin_orders_clear_confirm(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_orders_clear_execute")
 async def admin_orders_clear_execute(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -309,7 +299,6 @@ async def admin_orders_clear_execute(callback: CallbackQuery):
     await db.clear_all_orders()
     await callback.answer("✅ Все заявки удалены", show_alert=True)
     await admin_orders_menu(callback)
-
 
 @router.callback_query(F.data.startswith("admin_order_manage_"))
 async def admin_order_manage(callback: CallbackQuery, bot: Bot):
@@ -375,7 +364,6 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
     await callback.message.edit_text(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data.startswith("admin_order_check_"))
 async def admin_order_check(callback: CallbackQuery, bot: Bot):
     admin_id = callback.from_user.id
@@ -428,7 +416,6 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
     await callback.message.answer(text, reply_markup=keyboard.as_markup(), parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data.startswith("admin_request_receipt_"))
 async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
     admin_id = callback.from_user.id
@@ -464,7 +451,6 @@ async def admin_request_receipt(callback: CallbackQuery, bot: Bot):
         logger.error(f"[ADMIN {admin_id}] Ошибка отправки напоминания: {e}")
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
-
 @router.callback_query(F.data.startswith("admin_msg_"))
 async def admin_msg_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -483,7 +469,6 @@ async def admin_msg_start(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.answer("💬 Введите сообщение для отправки клиенту (или отправьте /cancel для отмены):")
     await callback.answer()
-
 
 @router.message(AdminStates.sending_message_to_user)
 async def admin_send_message_to_user(message: Message, state: FSMContext, bot: Bot):
@@ -512,7 +497,6 @@ async def admin_send_message_to_user(message: Message, state: FSMContext, bot: B
 
     await state.clear()
 
-
 @router.callback_query(F.data.startswith("admin_p2p_address_"))
 async def admin_p2p_address_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -538,7 +522,6 @@ async def admin_p2p_address_start(callback: CallbackQuery, state: FSMContext):
         f"Введите текст (или /cancel для отмены):"
     )
     await callback.answer()
-
 
 @router.message(AdminStates.entering_p2p_wallet_address)
 async def admin_p2p_address_finish(message: Message, state: FSMContext, bot: Bot):
@@ -573,7 +556,6 @@ async def admin_p2p_address_finish(message: Message, state: FSMContext, bot: Bot
     await message.answer(f"✅ Адрес отправлен клиенту. Ожидайте ввода хеша от клиента.")
     await state.clear()
 
-
 @router.callback_query(F.data.startswith("admin_approve_"))
 async def admin_approve_order(
     callback: CallbackQuery,
@@ -600,7 +582,6 @@ async def admin_approve_order(
             
         await db.update_order_status(order_id, 'completed', admin_comment="Выплата рублей произведена", admin_id=admin_id)
         
-        # Выдаём купоны за активность и спин
         await coupon_service.check_and_give_activity_coupons(order.user_id)
         total_ex = await db.increment_total_exchanges(order.user_id)
         threshold = int(await db.get_setting('spin_threshold', '5'))
@@ -624,8 +605,7 @@ async def admin_approve_order(
         try: await bot.send_message(order.user_id, user_text, parse_mode="HTML")
         except Exception as e: logger.error(f"Не удалось уведомить пользователя {order.user_id}: {e}")
 
-        # Отправка запроса отзыва
-        await ask_for_review(bot, order.user_id, order_id) # <-- ДОБАВЛЕНО
+        await ask_for_review(bot, order.user_id, order_id)
 
         hash_text = ""
         if order.tx_hash:
@@ -643,26 +623,29 @@ async def admin_approve_order(
     # ---- КОНЕЦ ЛОГИКИ P2P SELL ----
 
     payment_mode = await db.get_payment_mode()
-
-    auto_send = (payment_mode == 'auto') or (
-        order.crypto_type == 'LTC' and order.order_type != 'p2p_sell'
-    )
+    auto_send = (payment_mode == 'auto') or (order.crypto_type == 'LTC' and order.order_type != 'p2p_sell')
 
     if auto_send:
-        if payment_mode != 'auto':
-            logger.info(
-                f"[ADMIN {admin_id}] Заявка #{order_id}: LTC-автоотправка в ручном режиме"
-            )
-
         result = await admin_order_service.approve_order_auto(order_id, admin_id, bot)
+        
         if not result['success']:
             await callback.answer(f"❌ {result['error']}", show_alert=True)
+            return
+        
+        if result.get('queued'):
+            await callback.message.edit_text(
+                f"⏳ <b>Заявка #{order.public_order_number or order.id} в очереди.</b>\n\n"
+                f"{result['message']}\n\n"
+                f"Бот автоматически отправит криптовалюту, как только комиссия сети снизится (проверка каждые 10 минут).",
+                reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup(),
+                parse_mode="HTML"
+            )
+            await callback.answer("Заявка в очереди на отправку", show_alert=True)
             return
 
         order = result['order']
         tx_hash = result['tx_hash']
         
-        # Выдаём купоны за активность и спин
         await coupon_service.check_and_give_activity_coupons(order.user_id)
         total_ex = await db.increment_total_exchanges(order.user_id)
         threshold = int(await db.get_setting('spin_threshold', '5'))
@@ -694,7 +677,7 @@ async def admin_approve_order(
         try: await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
         except: pass
         
-        await ask_for_review(bot, order.user_id, order_id) # <-- ДОБАВЛЕНО СЮДА
+        await ask_for_review(bot, order.user_id, order_id)
 
         await notify_admins(bot, admin_text, exclude_id=admin_id)
 
@@ -713,7 +696,7 @@ async def admin_approve_order(
         except: await callback.message.answer(result_text, reply_markup=reply_markup, parse_mode="HTML")
         await callback.answer("Заявка подтверждена!")
 
-    else:  # Ручной режим (BTC или LTC, если авто отключили бы)
+    else:
         if order.status != 'paid':
             await callback.answer("❌ Заявка не в статусе 'оплачена'. Чек ещё не получен.", show_alert=True)
             return
@@ -745,7 +728,6 @@ async def admin_approve_order(
         await state.set_state(AdminStates.waiting_tx_hash)
         await callback.answer()
 
-
 @router.callback_query(F.data.startswith("admin_enter_tx_hash_"))
 async def admin_start_tx_hash_input(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -768,7 +750,6 @@ async def admin_start_tx_hash_input(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AdminStates.waiting_tx_hash)
     await callback.answer()
-
 
 @router.message(AdminStates.waiting_tx_hash)
 async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, admin_order_service: AdminOrderService):
@@ -804,7 +785,6 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
         await message.answer(f"❌ Не удалось завершить заявку #{order_id}.\nПричина: {html.escape(err)}{extra_hint}\n\nДля отмены введите /cancel.")
         return
 
-    # Проверка на выдачу билета за обмен
     total_ex = await db.increment_total_exchanges(order.user_id)
     threshold = int(await db.get_setting('spin_threshold', '5'))
     if total_ex % threshold == 0:
@@ -824,11 +804,10 @@ async def admin_enter_tx_hash(message: Message, state: FSMContext, bot: Bot, adm
     try: await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
     except: pass
 
-    await ask_for_review(bot, order.user_id, order_id) # <-- ДОБАВЛЕНО СЮДА
+    await ask_for_review(bot, order.user_id, order_id)
 
     await message.answer(f"✅ Хеш сохранён. Пользователь уведомлён. Заявка #{order.public_order_number or order.id} выполнена.")
     await state.clear()
-
 
 @router.callback_query(F.data.startswith("admin_manual_complete_"))
 async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_service: AdminOrderService):
@@ -851,7 +830,6 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
 
     await coupon_service.check_and_give_activity_coupons(order.user_id)
     
-    # Спин
     total_ex = await db.increment_total_exchanges(order.user_id)
     threshold = int(await db.get_setting('spin_threshold', '5'))
     if total_ex % threshold == 0:
@@ -867,7 +845,6 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
         reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup()
     )
     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("admin_reject_"))
 async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_service: AdminOrderService):
@@ -889,7 +866,6 @@ async def admin_reject_order(callback: CallbackQuery, bot: Bot, admin_order_serv
     try: await callback.message.edit_text(result_text, reply_markup=reply_markup)
     except: await callback.message.answer(result_text, reply_markup=reply_markup)
     await callback.answer("Заявка отклонена")
-
 
 @router.callback_query(F.data.startswith("admin_enter_payment_details_"))
 async def admin_enter_payment_details_start(callback: CallbackQuery, state: FSMContext):
@@ -913,7 +889,6 @@ async def admin_enter_payment_details_start(callback: CallbackQuery, state: FSMC
         f"Отправьте текст (или /cancel для отмены):"
     )
     await callback.answer()
-
 
 @router.message(AdminStates.entering_manual_payment_details)
 async def admin_enter_payment_details_finish(
