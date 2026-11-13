@@ -9,6 +9,7 @@ from typing import Optional, Dict, List, Tuple
 try:
     from bitcoinlib.transactions import Transaction
     from bitcoinlib.keys import Key
+    from bitcoinlib.services.services import Service
     BITCOINLIB_AVAILABLE = True
 except ImportError:
     BITCOINLIB_AVAILABLE = False
@@ -226,17 +227,21 @@ class BitcoinServiceBlockCypher:
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
             
-        # Подписываем транзакцию
-        txid = t.sign(keys=[key])
+        # 1. Подписываем транзакцию
+        t.sign(keys=[key])
         
-        # ЖЕЛЕЗОБЕТОННАЯ ЗАЩИТА: если библиотека вернула None (баг API), берем хеш из самого объекта
+        # 2. Получаем сырой хекс транзакции
+        raw_hex = t.raw_hex()
+        logger.info(f"Транзакция подписана, raw_hex: {raw_hex[:64]}...")
+        
+        # 3. Отправляем в сеть (broadcast)
+        service = Service(network='bitcoin')
+        txid = service.sendrawtransaction(raw_hex)
+        
         if not txid:
-            txid = getattr(t, 'txid', None)
+            raise Exception("Ошибка библиотеки: сервис вернул пустой txid при отправке")
             
-        if not txid:
-            raise Exception("Ошибка библиотеки: не удалось получить хеш подписанной транзакции")
-            
-        logger.info(f"Транзакция успешно подписана и отправлена, txid: {txid}")
+        logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
         return str(txid)
 
 
@@ -399,17 +404,21 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
             
-        # Подписываем транзакцию
-        txid = t.sign(keys=[key])
+        # 1. Подписываем транзакцию
+        t.sign(keys=[key])
         
-        # ЖЕЛЕЗОБЕТОННАЯ ЗАЩИТА
+        # 2. Получаем сырой хекс транзакции
+        raw_hex = t.raw_hex()
+        logger.info(f"Транзакция подписана, raw_hex: {raw_hex[:64]}...")
+        
+        # 3. Отправляем в сеть (broadcast)
+        service = Service(network='litecoin')
+        txid = service.sendrawtransaction(raw_hex)
+        
         if not txid:
-            txid = getattr(t, 'txid', None)
+            raise Exception("Ошибка библиотеки: сервис вернул пустой txid при отправке")
             
-        if not txid:
-            raise Exception("Ошибка библиотеки: не удалось получить хеш подписанной транзакции")
-            
-        logger.info(f"Транзакция успешно подписана и отправлена, txid: {txid}")
+        logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
         return str(txid)
 
 
