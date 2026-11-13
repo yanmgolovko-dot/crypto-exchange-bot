@@ -183,39 +183,6 @@ async def expire_worker(bot: Bot, expire_service: ExpireService):
             logger.exception(f"Критическая ошибка в воркере автоотмены: {e}")
         await asyncio.sleep(15 * 60)
 
-async def network_fee_worker(bot: Bot, admin_order_service: AdminOrderService):
-    """Фоновый воркер, который проверяет заявки в очереди (waiting_network_fee)."""
-    logger.info("Запуск воркера ожидания комиссии сети")
-    await asyncio.sleep(60)
-    while True:
-        try:
-            async with db.uow() as uow:
-                cursor = await uow._connection.conn.execute("SELECT id, admin_checked_by FROM exchange_orders WHERE status = 'waiting_network_fee'")
-                rows = await cursor.fetchall()
-
-            if rows:
-                btc_fee = await wallet_manager.btc.get_recommended_fee()
-                ltc_fee = await wallet_manager.ltc.get_recommended_fee()
-                
-                for row in rows:
-                    order_id, admin_id = row[0], row[1] or 0
-                    order = await db.get_order(order_id)
-                    if not order: continue
-
-                    if order.crypto_type == 'BTC' and btc_fee <= wallet_manager.btc.MAX_FEE_SAT:
-                        res = await admin_order_service.approve_order_auto(order_id, admin_id, bot, force_fee_sat=btc_fee)
-                    elif order.crypto_type == 'LTC' and ltc_fee <= wallet_manager.ltc.MAX_FEE_SAT:
-                        res = await admin_order_service.approve_order_auto(order_id, admin_id, bot, force_fee_sat=ltc_fee)
-                    else:
-                        continue
-
-                    if res.get('success'):
-                        try: await bot.send_message(admin_id, f"✅ Заявка #{order_id} отправлена из очереди! (Сеть: {btc_fee if order.crypto_type=='BTC' else ltc_fee} sat)")
-                        except: pass
-        except Exception as e:
-            logger.error(f"Ошибка в воркере комиссии: {e}")
-        await asyncio.sleep(600)
-
 async def on_startup():
     print("🟢 on_startup: начало")
     start_time = time.time()
@@ -321,7 +288,6 @@ async def main():
 
     asyncio.create_task(reminder_worker(bot, db, payment_service))
     asyncio.create_task(expire_worker(bot, expire_service))
-    asyncio.create_task(network_fee_worker(bot, admin_order_service))
 
     try:
         print("🟢 Запуск polling с skip_updates=True...")

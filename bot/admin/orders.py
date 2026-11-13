@@ -109,7 +109,7 @@ async def admin_orders_paid(callback: CallbackQuery):
         return
 
     orders = await db.get_pending_orders()
-    paid_orders = [o for o in orders if o.status in ('paid', 'waiting_network_fee')]
+    paid_orders = [o for o in orders if o.status == 'paid']
 
     if not paid_orders:
         await callback.answer("Нет заявок на проверке", show_alert=True)
@@ -120,11 +120,10 @@ async def admin_orders_paid(callback: CallbackQuery):
 
     for order in paid_orders[:10]:
         safe_username = html.escape(order.username) if order.username else 'N/A'
-        status_str = "⏳ В очереди (ждет комиссию)" if order.status == 'waiting_network_fee' else "💳 На проверке"
         text += (
             f"<b>#{order.public_order_number or order.id}</b> | @{safe_username}\n"
             f"   {order.amount_rub:,.0f} ₽ → {order.amount_crypto:.8f} {order.crypto_type}\n"
-            f"   Статус: {status_str}\n\n"
+            f"   Статус: 💳 На проверке\n\n"
         )
         keyboard.button(text=f"Проверить #{order.public_order_number or order.id}", callback_data=f"admin_order_check_{order.id}")
 
@@ -632,17 +631,6 @@ async def admin_approve_order(
             await callback.answer(f"❌ {result['error']}", show_alert=True)
             return
         
-        if result.get('queued'):
-            await callback.message.edit_text(
-                f"⏳ <b>Заявка #{order.public_order_number or order.id} в очереди.</b>\n\n"
-                f"{result['message']}\n\n"
-                f"Бот автоматически отправит криптовалюту, как только комиссия сети снизится (проверка каждые 10 минут).",
-                reply_markup=InlineKeyboardBuilder().button(text="🔙 К заявкам", callback_data="admin_orders_menu").as_markup(),
-                parse_mode="HTML"
-            )
-            await callback.answer("Заявка в очереди на отправку", show_alert=True)
-            return
-
         order = result['order']
         tx_hash = result['tx_hash']
         

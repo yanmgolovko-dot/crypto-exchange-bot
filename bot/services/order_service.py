@@ -21,25 +21,9 @@ class OrderService:
         'LTC': 4.5
     }
 
-    # Дефолтные значения скрытой комиссии сети для клиента (в крипте)
-    DEFAULT_CLIENT_NETWORK_FEE = {
-        'BTC': 0.00000700, # 7000 sat
-        'LTC': 0.00030000  # 30000 sat
-    }
-
     def __init__(self, db: Database, crypto_api):
         self.db = db
         self.crypto_api = crypto_api
-
-    async def get_client_network_fee(self, crypto_type: str) -> float:
-        """Возвращает фиксированную комиссию сети для клиента (в крипте)."""
-        key = f'client_network_fee_{crypto_type.lower()}'
-        default = str(self.DEFAULT_CLIENT_NETWORK_FEE.get(crypto_type, 0))
-        value = await self.db.get_setting(key, default)
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return self.DEFAULT_CLIENT_NETWORK_FEE.get(crypto_type, 0)
 
     async def calculate_order(
         self,
@@ -110,17 +94,12 @@ class OrderService:
         target_fee_rub = target_fee_usd * usd_rub
         logger.debug(f"Комиссия по проценту: {fee_usd_percent:.2f} USD, финальная: {target_fee_usd:.2f} USD, в рублях: {target_fee_rub:.2f}")
 
-        # --- Скрытая фиксированная комиссия сети ---
-        client_fee_crypto = await self.get_client_network_fee(crypto_type)
-        client_fee_rub = client_fee_crypto * rate
-        logger.debug(f"Скрытая комиссия сети: {client_fee_crypto} {crypto_type} = {client_fee_rub:.2f} ₽")
-
-        # Итоговая сумма к оплате (Net + Комиссия обменника + Скрытая комиссия сети)
-        gross_raw = net_amount + target_fee_rub + client_fee_rub
+        # Скрытая фиксированная сетевая комиссия больше не начисляется клиенту —
+        # её платит обменник (см. crypto_wallets.FIXED_FEE_SAT).
+        gross_raw = net_amount + target_fee_rub
         gross_rounded = math.ceil(gross_raw / 100) * 100
         amount_crypto = net_amount / rate
 
-        # Общая наценка над net_amount (для отображения клиенту в поле fee_percent)
         total_markup = gross_rounded - net_amount
         total_markup_percent = (total_markup / net_amount) * 100 if net_amount > 0 else 0
 
@@ -136,8 +115,6 @@ class OrderService:
             'input_type': input_type,
             'fee_usd': round(target_fee_usd, 2),
             'usd_rub': round(usd_rub, 2),
-            'client_network_fee_crypto': round(client_fee_crypto, 8),
-            'client_network_fee_rub': round(client_fee_rub, 2),
             'commission_rub': round(target_fee_rub, 2)
         }
         logger.info(f"Результат расчёта: {result}")

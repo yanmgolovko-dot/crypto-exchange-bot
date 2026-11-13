@@ -486,6 +486,17 @@ def init_db_sync():
     except Exception as e:
         logger.error(f"Ошибка при инициализации счётчика заявок: {e}")
 
+    # ===== МИГРАЦИЯ: фиксированная комиссия сети =====
+    # Сетевой воркер удалён (комиссия теперь фиксированная), поэтому заявки
+    # в статусе waiting_network_fee больше никто не обработает.
+    # Переводим их обратно в 'paid' — админ подтвердит вручную.
+    try:
+        cursor = conn.execute("UPDATE exchange_orders SET status = 'paid' WHERE status = 'waiting_network_fee'")
+        if cursor.rowcount > 0:
+            logger.info(f"Миграция: {cursor.rowcount} заявок переведены из waiting_network_fee в paid")
+    except Exception as e:
+        logger.error(f"Ошибка миграции waiting_network_fee → paid: {e}")
+
     conn.commit()
     conn.close()
     logger.info("Инициализация БД завершена")

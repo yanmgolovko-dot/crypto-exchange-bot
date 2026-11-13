@@ -31,7 +31,8 @@ async def admin_wallets_menu(callback: CallbackQuery, admin_wallet_service: Admi
     await callback.answer()
 
     try:
-        balances = await admin_wallet_service.refresh_balances()
+        # force=False: используем TTL-кэш, чтобы не сжигать лимит BlockCypher
+        balances = await admin_wallet_service.refresh_balances(force=False)
         btc_balance = balances['BTC']
         ltc_balance = balances['LTC']
         logger.debug(f"Балансы: BTC={btc_balance}, LTC={ltc_balance}")
@@ -165,7 +166,7 @@ async def admin_wallet_label(message: Message, state: FSMContext):
 
 @router.message(AdminStates.adding_wallet_label)
 async def admin_wallet_finish(message: Message, state: FSMContext, admin_wallet_service: AdminWalletService):
-    """Финализация добавления кошелька."""
+    """Финaлизация добавления кошелька."""
     admin_id = message.from_user.id
     label = message.text.strip() or None
     data = await state.get_data()
@@ -285,7 +286,6 @@ async def admin_wallet_deactivate_confirm(callback: CallbackQuery, admin_wallet_
         logger.error(f"[ADMIN {admin_id}] Ошибка при деактивации кошелька #{wallet_id}: {e}", exc_info=True)
         await callback.answer("❌ Ошибка", show_alert=True)
 
-    # Обновляем список
     await admin_wallet_list(callback, admin_wallet_service)
 
 
@@ -370,13 +370,12 @@ async def admin_wallet_hard_delete_execute(callback: CallbackQuery, admin_wallet
     except Exception as e:
         error_str = str(e)
         if "FOREIGN KEY constraint failed" in error_str:
-            logger.warning(f"[ADMIN {admin_id}] Попытка удалить кошелёк #{wallet_id} с связанными транзакциями")
+            logger.warning(f"[ADMIN {admin_id}] Попытка удалить кошелёк #{wallet_id} со связанными транзакциями")
             await callback.answer("❌ Нельзя удалить: есть связанные транзакции. Сначала удалите их вручную.", show_alert=True)
         else:
             logger.error(f"[ADMIN {admin_id}] Ошибка при полном удалении кошелька: {e}", exc_info=True)
             await callback.answer(f"❌ Ошибка: {error_str[:100]}", show_alert=True)
 
-    # Возвращаемся к списку
     await admin_wallet_list(callback, admin_wallet_service)
 
 
@@ -441,7 +440,7 @@ async def admin_wallets_delete_all_execute(callback: CallbackQuery, admin_wallet
 
 @router.callback_query(F.data == "admin_wallet_refresh")
 async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: AdminWalletService):
-    """Обновление балансов всех кошельков."""
+    """Обновление балансов всех кошельков (игнорирует кэш)."""
     admin_id = callback.from_user.id
     if not await is_admin(admin_id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
@@ -451,7 +450,8 @@ async def admin_wallet_refresh(callback: CallbackQuery, admin_wallet_service: Ad
     await callback.answer("🔄 Обновляю балансы...", show_alert=False)
 
     try:
-        balances = await admin_wallet_service.refresh_balances()
+        # force=True: принудительный запрос к BlockCypher по кнопке админа
+        balances = await admin_wallet_service.refresh_balances(force=True)
         wallets = await admin_wallet_service.get_wallets()
         btc_wallets = [w for w in wallets if w.crypto_type == 'BTC']
         ltc_wallets = [w for w in wallets if w.crypto_type == 'LTC']

@@ -98,18 +98,19 @@ class AdminWalletService:
             logger.error(f"Ошибка при полном удалении кошелька #{wallet_id}: {e}", exc_info=True)
             return False
 
-    async def refresh_balances(self) -> Dict[str, float]:
+    async def refresh_balances(self, force: bool = False) -> Dict[str, float]:
         """
         Обновить балансы всех кошельков и вернуть суммарные балансы по типам.
+        :param force: если True — игнорировать кэш (используется кнопкой «🔄 Обновить»).
         """
-        logger.info("Обновление балансов всех кошельков")
+        logger.info(f"Обновление балансов всех кошельков (force={force})")
         wallets = await self.db.get_all_wallets()
         btc_balance = 0.0
         ltc_balance = 0.0
         updated_count = 0
         for wallet in wallets:
             try:
-                result = await self.wallet_manager.update_balance(wallet.id)
+                result = await self.wallet_manager.update_balance(wallet.id, force=force)
                 if result['success']:
                     updated_count += 1
                     if wallet.crypto_type == 'BTC':

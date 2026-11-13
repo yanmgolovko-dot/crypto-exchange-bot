@@ -363,9 +363,6 @@ class ConfirmationStep(OrderCreationStep):
         self.data.net_amount = calc_result['net_amount']
         self.data.amount_crypto = calc_result['amount_crypto']
         self.data.fee_percent = calc_result['fee_percent']
-        self.data.client_network_fee_rub = calc_result.get('client_network_fee_rub', 0)
-        self.data.client_network_fee_crypto = calc_result.get('client_network_fee_crypto', 0)
-        self.data.commission_rub = calc_result.get('commission_rub', 0)
 
         # СКРЫТАЯ КОМИССИЯ: клиент видит только сумму к получению и сумму к оплате
         text = (

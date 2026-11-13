@@ -2,7 +2,7 @@
 import logging
 import asyncio
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 
 # Для Litecoin используем bitcoinlib (чистый Python) + BlockCypher
@@ -25,14 +25,19 @@ logger = logging.getLogger(__name__)
 # не имеет смысла: сеть всё равно не примет его как экономически выгодный.
 _DUST_SAT = 546
 
+# Время жизни кэша баланса (минуты). В течение этого окна повторные запросы
+# к BlockCypher не выполняются — возвращается баланс из БД.
+BALANCE_CACHE_TTL_MINUTES = 10
+
 
 # ==================== BitcoinService через BlockCypher ====================
 class BitcoinServiceBlockCypher:
     """Сервис для работы с Bitcoin через BlockCypher API (не требует Electrum)."""
 
     API_URL = "https://api.blockcypher.com/v1/btc/main"
-    # Максимальная комиссия сети для BTC: 0.00000700 BTC = 7 000 sat
-    MAX_FEE_SAT = 7000
+    # Фиксированная комиссия сети для BTC: 7000 sat ≈ $0.8. Платит обменник,
+    # клиенту не показывается и в расчёте заявки не участвует.
+    FIXED_FEE_SAT = 7000
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -92,47 +97,26 @@ class BitcoinServiceBlockCypher:
             logger.error(f"Ошибка получения UTXO: {e}")
             return []
 
-    async def get_recommended_fee(self) -> int:
-        """Запрашивает актуальную комиссию сети."""
-        try:
-            session = await self._get_session()
-            async with session.get(self.API_URL, params={"token": self.api_token}) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    fee_per_kb = data.get("high_fee_per_kb", 20000)
-                    return max(int((fee_per_kb / 1000) * 300), 2000)
-        except Exception as e:
-            logger.error(f"Ошибка получения рекомендуемой комиссии: {e}")
-        return self.MAX_FEE_SAT
-
-    async def send_transaction(self, from_privkey_wif: str, to_address: str, amount_btc: float, force_fee_sat: int = None) -> str:
-        """Отправить BTC через BlockCypher с динамической комиссией."""
+    async def send_transaction(self, from_privkey_wif: str, to_address: str,
+                               amount_ltc: float) -> str:
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
-
         logger.info("=== send_transaction Bitcoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
-        logger.info(f"amount_btc: {amount_btc}")
-
-        key = Key(import_key=from_privkey_wif, network='bitcoin')
+        logger.info(f"amount_ltc: {amount_ltc}")
+        key = Key(import_key=from_privkey_wif, network='litecoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
-
         utxos = await self.get_utxo(from_address)
         if not utxos:
-            raise Exception("Нет непотраченных выходов (UTXO) для этого адреса")
-
+            raise Exception("Нет UTXO")
         logger.info(f"Найдено UTXO: {len(utxos)}")
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
-
-        amount_sat = int(round(amount_btc * 1e8))
-
-        # Используем принудительную комиссию или запрашиваем динамическую
-        fee_sat = force_fee_sat if force_fee_sat is not None else await self.get_recommended_fee()
-        logger.info(f"Используемая комиссия сети: {fee_sat} satoshis")
-
-        t = Transaction(network='bitcoin', fee=fee_sat)
+        amount_sat = int(round(amount_ltc * 1e8))
+        fee_sat = self.FIXED_FEE_SAT
+        logger.info(f"Фиксированная комиссия сети (BTC): {fee_sat} satoshis")
+        t = Transaction(network='litecoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
             t.add_input(
@@ -142,16 +126,13 @@ class BitcoinServiceBlockCypher:
                 value=utxo["satoshis"],
             )
             total_input_sat += utxo["satoshis"]
-
         change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
                 f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
-
         t.add_output(address=to_address, value=amount_sat)
-
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
             logger.info(f"Добавлена сдача: {change_sat} sat на {from_address}")
@@ -159,55 +140,22 @@ class BitcoinServiceBlockCypher:
             logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
-
-        t.sign()
-
-        if not t.verify():
-            raise Exception("Transaction verification failed")
-
-        total_out_sat = sum(o.value for o in t.outputs)
-        actual_fee_sat = total_input_sat - total_out_sat
-        logger.info(f"Транзакция подписана: inputs={total_input_sat} sat, outputs={total_out_sat} sat, комиссия={actual_fee_sat} sat")
-
-        tx_hex = t.raw_hex()
-        logger.info(f"raw_hex длина: {len(tx_hex)}")
-
-        session = await self._get_session()
-        push_url = f"{self.API_URL}/txs/push?token={self.api_token}"
-        payload = {"tx": tx_hex}
-        async with session.post(push_url, json=payload) as resp:
-            if resp.status == 201:
-                result = await resp.json()
-                txid = result["tx"]["hash"]
-                logger.info(f"✅ Транзакция отправлена, txid: {txid}")
-                return txid
-            else:
-                error_text = await resp.text()
-                raise Exception(f"Ошибка отправки BlockCypher: {resp.status} - {error_text}")
+        txid = t.sign(keys=[key])
+        logger.info(f"Транзакция подписана, txid: {txid}")
+        return txid
 
 
 # ==================== LitecoinService через BlockCypher ====================
-class LitecoinServiceBlockCypher:
+class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
     """Сервис для работы с Litecoin через BlockCypher API."""
 
     API_URL = "https://api.blockcypher.com/v1/ltc/main"
-    # Максимальная комиссия сети для LTC: 0.00030000 LTC = 30 000 sat
-    MAX_FEE_SAT = 30000
-
-    def __init__(self, api_token: str):
-        self.api_token = api_token
-        self.session: Optional[aiohttp.ClientSession] = None
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
-        return self.session
-
-    async def close(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+    # Фиксированная комиссия сети для LTC: 2000 sat ≈ $0.02. Платит обменник,
+    # клиенту не показывается и в расчёте заявки не участвует.
+    FIXED_FEE_SAT = 2000
 
     async def get_balance(self, address: str) -> float:
+        """Получить баланс адреса в LTC через BlockCypher."""
         try:
             session = await self._get_session()
             url = f"{self.API_URL}/addrs/{address}/balance"
@@ -216,14 +164,18 @@ class LitecoinServiceBlockCypher:
                 if resp.status == 200:
                     data = await resp.json()
                     balance_sat = data.get("final_balance", 0)
+                    if isinstance(balance_sat, str):
+                        balance_sat = int(balance_sat)
                     return balance_sat / 1e8
                 else:
+                    logger.error(f"Ошибка BlockCypher LTC: {resp.status}")
                     return 0.0
         except Exception as e:
-            logger.error(f"Ошибка получения баланса: {e}")
+            logger.error(f"Ошибка получения баланса LTC: {e}")
             return 0.0
 
     async def get_utxo(self, address: str) -> List[Dict]:
+        """Получить UTXO для адреса LTC через BlockCypher."""
         try:
             session = await self._get_session()
             url = f"{self.API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
@@ -241,48 +193,31 @@ class LitecoinServiceBlockCypher:
                         })
                     return utxos
                 else:
+                    logger.error(f"Ошибка получения UTXO LTC: {resp.status}")
                     return []
         except Exception as e:
-            logger.error(f"Ошибка получения UTXO: {e}")
+            logger.error(f"Ошибка получения UTXO LTC: {e}")
             return []
 
-    async def get_recommended_fee(self) -> int:
-        try:
-            session = await self._get_session()
-            async with session.get(self.API_URL, params={"token": self.api_token}) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    fee_per_kb = data.get("high_fee_per_kb", 100000)
-                    return max(int((fee_per_kb / 1000) * 300), 10000)
-        except Exception as e:
-            logger.error(f"Ошибка получения рекомендуемой комиссии LTC: {e}")
-        return self.MAX_FEE_SAT
-
-    async def send_transaction(self, from_privkey_wif: str, to_address: str, amount_ltc: float, force_fee_sat: int = None) -> str:
+    async def send_transaction(self, from_privkey_wif: str, to_address: str,
+                               amount_ltc: float) -> str:
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
-
         logger.info("=== send_transaction Litecoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
         logger.info(f"amount_ltc: {amount_ltc}")
-
         key = Key(import_key=from_privkey_wif, network='litecoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
-
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет UTXO")
-
         logger.info(f"Найдено UTXO: {len(utxos)}")
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
-
         amount_sat = int(round(amount_ltc * 1e8))
-
-        fee_sat = force_fee_sat if force_fee_sat is not None else await self.get_recommended_fee()
-        logger.info(f"Используемая комиссия сети (LTC): {fee_sat} satoshis")
-
+        fee_sat = self.FIXED_FEE_SAT
+        logger.info(f"Фиксированная комиссия сети (LTC): {fee_sat} satoshis")
         t = Transaction(network='litecoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
@@ -293,16 +228,13 @@ class LitecoinServiceBlockCypher:
                 value=utxo["satoshis"],
             )
             total_input_sat += utxo["satoshis"]
-
         change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
                 f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
-
         t.add_output(address=to_address, value=amount_sat)
-
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
             logger.info(f"Добавлена сдача: {change_sat} sat на {from_address}")
@@ -310,31 +242,9 @@ class LitecoinServiceBlockCypher:
             logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
-
-        t.sign()
-
-        if not t.verify():
-            raise Exception("Transaction verification failed")
-
-        total_out_sat = sum(o.value for o in t.outputs)
-        actual_fee_sat = total_input_sat - total_out_sat
-        logger.info(f"Транзакция подписана: inputs={total_input_sat} sat, outputs={total_out_sat} sat, комиссия={actual_fee_sat} sat")
-
-        tx_hex = t.raw_hex()
-        logger.info(f"raw_hex длина: {len(tx_hex)}")
-
-        session = await self._get_session()
-        push_url = f"{self.API_URL}/txs/push?token={self.api_token}"
-        payload = {"tx": tx_hex}
-        async with session.post(push_url, json=payload) as resp:
-            if resp.status == 201:
-                result = await resp.json()
-                txid = result["tx"]["hash"]
-                logger.info(f"✅ Транзакция отправлена, txid: {txid}")
-                return txid
-            else:
-                error_text = await resp.text()
-                raise Exception(f"Ошибка отправки BlockCypher: {resp.status} - {error_text}")
+        txid = t.sign(keys=[key])
+        logger.info(f"Транзакция подписана, txid: {txid}")
+        return txid
 
 
 # ==================== CryptoWalletManager ====================
@@ -344,6 +254,88 @@ class CryptoWalletManager:
     def __init__(self):
         self.btc = BitcoinServiceBlockCypher(config.BLOCKCYPHER_TOKEN)
         self.ltc = LitecoinServiceBlockCypher(config.BLOCKCYPHER_TOKEN)
+        # Per-wallet locks, чтобы параллельные вызовы (меню + воркер)
+        # не делали два запроса к BlockCypher за один и тот же баланс.
+        self._wallet_locks: Dict[int, asyncio.Lock] = {}
+        self._locks_guard = asyncio.Lock()
+
+    async def _get_wallet_lock(self, wallet_id: int) -> asyncio.Lock:
+        async with self._locks_guard:
+            lock = self._wallet_locks.get(wallet_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._wallet_locks[wallet_id] = lock
+            return lock
+
+    @staticmethod
+    def _is_cache_fresh(wallet: Wallet) -> bool:
+        """Проверяет, что last_balance_check не старше BALANCE_CACHE_TTL_MINUTES.
+
+        SQLite CURRENT_TIMESTAMP хранит время в UTC в формате 'YYYY-MM-DD HH:MM:SS',
+        поэтому парсим и сравниваем в UTC, чтобы не зависеть от TZ сервера.
+        """
+        if not wallet.last_balance_check:
+            return False
+        try:
+            last = datetime.strptime(
+                wallet.last_balance_check, '%Y-%m-%d %H:%M:%S'
+            ).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                f"Не удалось распарсить last_balance_check кошелька #{wallet.id} "
+                f"({wallet.last_balance_check!r}): {e}"
+            )
+            return False
+        return (datetime.now(timezone.utc) - last) < timedelta(minutes=BALANCE_CACHE_TTL_MINUTES)
+
+    async def _fetch_and_cache_balance(self, wallet: Wallet, force: bool) -> Dict:
+        """Возвращает баланс кошелька, используя кэш в БД при свежести last_balance_check.
+
+        При ошибке API last_balance_check НЕ обновляется — иначе «нулевой» баланс
+        закэшировался бы на TTL и админ видел бы ложные нули.
+        """
+        # Быстрый путь без lock: запись в БД свежая
+        if not force and self._is_cache_fresh(wallet):
+            logger.debug(
+                f"Баланс кошелька #{wallet.id} из кэша "
+                f"(last_balance_check={wallet.last_balance_check})"
+            )
+            return {'success': True, 'balance': wallet.balance}
+
+        lock = await self._get_wallet_lock(wallet.id)
+        async with lock:
+            # Перечитываем из БД: возможно, другой корутин только что обновил баланс
+            fresh_wallet = await db.get_wallet(wallet_id=wallet.id)
+            if not fresh_wallet:
+                return {'success': False, 'error': 'Wallet not found'}
+            if not force and self._is_cache_fresh(fresh_wallet):
+                logger.debug(
+                    f"Баланс кошелька #{fresh_wallet.id} из кэша после lock "
+                    f"(last_balance_check={fresh_wallet.last_balance_check})"
+                )
+                return {'success': True, 'balance': fresh_wallet.balance}
+
+            try:
+                if fresh_wallet.crypto_type == 'BTC':
+                    balance = await self.btc.get_balance(fresh_wallet.address)
+                elif fresh_wallet.crypto_type == 'LTC':
+                    balance = await self.ltc.get_balance(fresh_wallet.address)
+                else:
+                    return {
+                        'success': False,
+                        'error': f'Unsupported crypto type: {fresh_wallet.crypto_type}',
+                    }
+            except Exception as e:
+                logger.error(
+                    f"Ошибка получения баланса кошелька #{fresh_wallet.id}: {e}",
+                    exc_info=True,
+                )
+                return {'success': False, 'error': str(e)}
+
+            # Обновляем БД (и last_balance_check) только при успехе
+            await db.update_wallet_balance(fresh_wallet.id, balance, 0)
+            logger.info(f"Баланс кошелька #{fresh_wallet.id} обновлён: {balance}")
+            return {'success': True, 'balance': balance}
 
     async def get_wallet(self, crypto_type: str = None, wallet_id: int = None):
         return await db.get_wallet(wallet_id=wallet_id, crypto_type=crypto_type)
@@ -354,126 +346,72 @@ class CryptoWalletManager:
     async def add_wallet(self, crypto_type: str, address: str, private_key: str, label: str = None) -> int:
         return await db.add_wallet(crypto_type, address, private_key, label)
 
-    async def update_balance(self, wallet_id: int) -> Dict:
-        logger.info(f"Обновление баланса кошелька #{wallet_id}")
+    async def update_balance(self, wallet_id: int, force: bool = False) -> Dict:
+        """Обновить баланс кошелька.
+
+        :param force: если True — игнорировать кэш и всегда идти в BlockCypher.
+        """
+        logger.info(f"Обновление баланса кошелька #{wallet_id} (force={force})")
         wallet = await db.get_wallet(wallet_id=wallet_id)
         if not wallet:
             return {'success': False, 'error': 'Wallet not found'}
-        try:
-            if wallet.crypto_type == 'BTC':
-                balance = await self.btc.get_balance(wallet.address)
-            elif wallet.crypto_type == 'LTC':
-                balance = await self.ltc.get_balance(wallet.address)
-            else:
-                return {'success': False, 'error': f'Unsupported crypto type: {wallet.crypto_type}'}
-            await db.update_wallet_balance(wallet_id, balance, 0)
-            return {'success': True, 'balance': balance}
-        except Exception as e:
-            logger.error(f"Ошибка обновления баланса кошелька #{wallet_id}: {e}")
-            return {'success': False, 'error': str(e)}
+        return await self._fetch_and_cache_balance(wallet, force)
 
-    async def check_sufficient_funds(self, crypto_type: str, amount: float) -> Tuple[bool, float]:
+    async def check_sufficient_funds(
+        self, crypto_type: str, amount: float, force: bool = False
+    ) -> Tuple[bool, float]:
+        """Проверяет, хватает ли средств на кошельке с учётом фиксированной комиссии сети.
+
+        Использует тот же кэш, что и update_balance, чтобы не жечь лимит BlockCypher.
+        """
         logger.info(f"Проверка наличия средств для {crypto_type}, необходимо {amount}")
         wallet = await db.get_wallet(crypto_type=crypto_type)
         if not wallet:
             return False, 0.0
-        try:
-            if crypto_type == 'BTC':
-                balance = await self.btc.get_balance(wallet.address)
-                required = amount + (self.btc.MAX_FEE_SAT / 1e8)
-            elif crypto_type == 'LTC':
-                balance = await self.ltc.get_balance(wallet.address)
-                required = amount + (self.ltc.MAX_FEE_SAT / 1e8)
-            else:
-                return False, 0.0
-            return balance >= required, balance
-        except Exception as e:
-            logger.error(f"Ошибка проверки средств: {e}")
+        result = await self._fetch_and_cache_balance(wallet, force)
+        if not result.get('success'):
+            logger.warning(
+                f"Не удалось получить баланс {crypto_type} для проверки средств: "
+                f"{result.get('error')}"
+            )
             return False, 0.0
+
+        balance = result['balance']
+        if crypto_type == 'BTC':
+            required = amount + (self.btc.FIXED_FEE_SAT / 1e8)
+        elif crypto_type == 'LTC':
+            required = amount + (self.ltc.FIXED_FEE_SAT / 1e8)
+        else:
+            return False, 0.0
+        return balance >= required, balance
 
     async def send_transaction_real(self, order_id: int, crypto_type: str,
                                     to_address: str, amount: float,
-                                    wallet: Optional[Wallet] = None,
-                                    force_fee_sat: int = None) -> Dict:
+                                    wallet: Optional[Wallet] = None) -> Dict:
         logger.info(f"Запуск отправки криптовалюты по заявке #{order_id}, сумма {amount} {crypto_type}")
         if wallet is None:
             wallet = await db.get_wallet(crypto_type=crypto_type)
             if not wallet:
                 return {'success': False, 'error': f'Нет активного кошелька для {crypto_type}'}
-
         from_address = str(wallet.address).strip()
         to_address = str(to_address).strip()
         if not from_address or not to_address:
             return {'success': False, 'error': 'Пустой адрес'}
-
         try:
             private_key_wif = decrypt_private_key(wallet.private_key)
             if not private_key_wif:
                 return {'success': False, 'error': 'Пустой приватный ключ'}
+            if crypto_type == 'BTC':
+                txid = await self.btc.send_transaction(private_key_wif, to_address, amount)
+            elif crypto_type == 'LTC':
+                txid = await self.ltc.send_transaction(private_key_wif, to_address, amount)
+            else:
+                return {'success': False, 'error': f'Unsupported crypto type: {crypto_type}'}
+            logger.info(f"Транзакция отправлена, txid: {txid}")
+            return {'success': True, 'tx_hash': txid}
         except Exception as e:
-            logger.error(f"Ошибка расшифровки ключа для кошелька #{wallet.id}: {e}")
-            return {'success': False, 'error': f'Ошибка расшифровки ключа: {e}'}
-
-        # Создаём запись транзакции в БД (статус pending)
-        tx_db_id = await db.create_crypto_transaction(
-            order_id=order_id,
-            wallet_id=wallet.id,
-            crypto_type=wallet.crypto_type,
-            to_address=to_address,
-            amount=amount
-        )
-        logger.info(f"Создана запись транзакции #{tx_db_id} со статусом pending")
-
-        max_retries = 3
-        txid = None
-
-        for attempt in range(max_retries):
-            try:
-                if crypto_type == 'BTC':
-                    txid = await self.btc.send_transaction(private_key_wif, to_address, amount, force_fee_sat)
-                elif crypto_type == 'LTC':
-                    txid = await self.ltc.send_transaction(private_key_wif, to_address, amount, force_fee_sat)
-                else:
-                    return {'success': False, 'error': f'Неподдерживаемый тип: {crypto_type}'}
-
-                if txid:
-                    logger.info(f"Транзакция отправлена, txid: {txid}")
-                    break
-                else:
-                    raise Exception("broadcast вернул пустой txid")
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    logger.error(f"Все попытки не удались: {e}")
-                    await db.update_crypto_transaction(
-                        tx_db_id,
-                        status='failed',
-                        error_message=str(e)
-                    )
-                    return {'success': False, 'error': str(e)}
-                wait = 2 ** attempt
-                logger.warning(f"Попытка {attempt+1} не удалась: {e}, повтор через {wait} сек")
-                await asyncio.sleep(wait)
-
-        if not txid:
-            await db.update_crypto_transaction(
-                tx_db_id,
-                status='failed',
-                error_message='Не удалось отправить транзакцию после нескольких попыток'
-            )
-            return {'success': False, 'error': 'Не удалось отправить транзакцию после нескольких попыток'}
-
-        # Обновляем запись транзакции (статус broadcasted, tx_hash)
-        await db.update_crypto_transaction(
-            tx_db_id,
-            status='broadcasted',
-            tx_hash=txid,
-            broadcasted_at=datetime.now().isoformat(),
-            fee_paid=0
-        )
-        logger.info(f"Статус транзакции #{tx_db_id} обновлён на broadcasted, tx_hash={txid}")
-
-        asyncio.create_task(self.update_balance(wallet.id))
-        return {'success': True, 'tx_hash': txid}
+            logger.error(f"Ошибка отправки транзакции: {e}")
+            return {'success': False, 'error': str(e)}
 
     async def get_transaction_history(self, limit: int = 20) -> List:
         logger.debug(f"Запрос истории транзакций, лимит {limit}")
