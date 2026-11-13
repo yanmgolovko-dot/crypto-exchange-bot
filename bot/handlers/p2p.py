@@ -34,6 +34,12 @@ router = Router()
 COIN_NETWORKS = {'USDT': 'TRC20', 'TRX': 'TRC20', 'BTC': 'BTC', 'LTC': 'LTC'}
 COIN_NAMES = {'USDT': '💵 USDT', 'TRX': '⚡ TRX', 'BTC': '₿ BTC', 'LTC': 'Ł LTC'}
 
+P2P_DISABLED_TEXT = (
+    "⏸ <b>Обмен временно приостановлен</b>\n\n"
+    "Приносим извинения за неудобства. Попробуйте позже.\n\n"
+    "💡 Пока что можно пользоваться режимом 🛒 <b>Шоп</b> — быстрая покупка BTC/LTC на ваш кошелёк."
+)
+
 
 class P2PStates(StatesGroup):
     entering_amount = State()
@@ -69,8 +75,36 @@ async def _get_rate(coin: str, action: str) -> float:
     except (ValueError, TypeError): return 0.0
 
 
+async def _is_p2p_enabled() -> bool:
+    """Проверяет, включён ли режим P2P Обмена (exchange_enabled в system_settings)."""
+    try:
+        value = await db.get_setting('exchange_enabled', '1')
+        return value == '1'
+    except Exception as e:
+        logger.warning(f"Не удалось прочитать exchange_enabled: {e}")
+        return True
+
+
+async def _block_if_disabled(target) -> bool:
+    """Возвращает True если P2P выключен (и уже отправил сообщение). False — работать дальше."""
+    enabled = await _is_p2p_enabled()
+    if enabled:
+        return False
+    if isinstance(target, CallbackQuery):
+        await target.answer("⏸ Обмен временно приостановлен", show_alert=True)
+        try:
+            await target.message.answer(P2P_DISABLED_TEXT, parse_mode="HTML")
+        except Exception:
+            pass
+    else:
+        await target.answer(P2P_DISABLED_TEXT, parse_mode="HTML")
+    return True
+
+
 @router.callback_query(F.data.regexp(r"^exch_(buy|sell)_(USDT|TRX|BTC|LTC)$"))
 async def p2p_coin_selected(callback: CallbackQuery, state: FSMContext):
+    if await _block_if_disabled(callback):
+        return
     parts = callback.data.split("_")
     action, coin = parts[1], parts[2]
     rate = await _get_rate(coin, action)
@@ -86,6 +120,8 @@ async def p2p_coin_selected(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.regexp(r"^exch_input_(buy|sell)_(USDT|TRX|BTC|LTC)_(rub|crypto)$"))
 async def p2p_input_type_selected(callback: CallbackQuery, state: FSMContext):
+    if await _block_if_disabled(callback):
+        return
     parts = callback.data.split("_")
     action, coin, input_type = parts[2], parts[3], parts[4]
     rate = await _get_rate(coin, action)
@@ -106,6 +142,9 @@ async def p2p_input_type_selected(callback: CallbackQuery, state: FSMContext):
 
 @router.message(P2PStates.entering_amount)
 async def p2p_amount_received(message: Message, state: FSMContext):
+    if await _block_if_disabled(message):
+        await state.clear()
+        return
     if not message.text:
         await message.answer("❌ Введите число текстом.")
         return
@@ -194,6 +233,9 @@ async def _p2p_ask_for_details_or_wallet(target, state: FSMContext):
 
 @router.callback_query(P2PStates.entering_promo, F.data.startswith("apply_coupon_"))
 async def p2p_apply_coupon(callback: CallbackQuery, state: FSMContext, db: Database):
+    if await _block_if_disabled(callback):
+        await state.clear()
+        return
     code = callback.data.split("_")[2]
     data = await state.get_data()
     amount_rub = data.get('p2p_amount_rub')
@@ -211,12 +253,18 @@ async def p2p_apply_coupon(callback: CallbackQuery, state: FSMContext, db: Datab
 
 @router.callback_query(P2PStates.entering_promo, F.data == "p2p_skip_promo")
 async def p2p_skip_promo(callback: CallbackQuery, state: FSMContext):
+    if await _block_if_disabled(callback):
+        await state.clear()
+        return
     await state.update_data(p2p_discount_percent=0, p2p_coupon_code=None)
     await _p2p_ask_for_details_or_wallet(callback, state)
 
 
 @router.callback_query(P2PStates.entering_promo, F.data == "promo_manual")
 async def p2p_promo_manual(callback: CallbackQuery, state: FSMContext):
+    if await _block_if_disabled(callback):
+        await state.clear()
+        return
     await state.set_state(P2PStates.entering_promo_text)
     await callback.message.answer("🎁 <b>Промокод</b>\n\nВведите код промокода или нажмите /cancel:")
     await callback.answer()
@@ -224,6 +272,9 @@ async def p2p_promo_manual(callback: CallbackQuery, state: FSMContext):
 
 @router.message(P2PStates.entering_promo_text)
 async def p2p_promo_text(message: Message, state: FSMContext, db: Database):
+    if await _block_if_disabled(message):
+        await state.clear()
+        return
     code = message.text.strip()
     data = await state.get_data()
     amount_rub = data.get('p2p_amount_rub')
@@ -243,6 +294,9 @@ async def p2p_promo_text(message: Message, state: FSMContext, db: Database):
 
 @router.message(P2PStates.entering_wallet)
 async def p2p_wallet_received(message: Message, state: FSMContext, bot: Bot, payment_service: PaymentService, user_service: UserService):
+    if await _block_if_disabled(message):
+        await state.clear()
+        return
     address = (message.text or '').strip()
     data = await state.get_data()
     coin = data.get('p2p_coin')
@@ -259,6 +313,9 @@ async def p2p_wallet_received(message: Message, state: FSMContext, bot: Bot, pay
 
 @router.message(P2PStates.entering_payment_details)
 async def p2p_details_received(message: Message, state: FSMContext, bot: Bot, payment_service: PaymentService, user_service: UserService):
+    if await _block_if_disabled(message):
+        await state.clear()
+        return
     details = (message.text or '').strip()
     if len(details) < 5:
         await message.answer("❌ Реквизиты слишком короткие. Введите подробнее (карта, банк).")
@@ -271,6 +328,10 @@ async def p2p_details_received(message: Message, state: FSMContext, bot: Bot, pa
 
 
 async def _create_p2p_order(message: Message, state: FSMContext, bot: Bot, payment_service: PaymentService, crypto_address: str, user_payment_details):
+    # Финальная защита от гонки: если админ выключил P2P, пока клиент вводил данные
+    if await _block_if_disabled(message):
+        await state.clear()
+        return
     data = await state.get_data()
     action = data.get('p2p_action')
     coin = data.get('p2p_coin')
@@ -419,3 +480,17 @@ async def p2p_cancel(callback: CallbackQuery, state: FSMContext):
     await safe_edit_message(callback.message, "❌ Создание P2P-заявки отменено.")
     await callback.message.answer("Выберите действие в меню 👇", reply_markup=exchange_menu_keyboard())
     await callback.answer()
+
+
+def _get_explorer_url(crypto_type: str, tx_hash: str) -> Optional[str]:
+    """URL эксплорера для просмотра транзакции (было в admin/orders.py, здесь — локальная копия)."""
+    if not tx_hash or tx_hash == 'N/A':
+        return None
+    cur = (crypto_type or "").upper()
+    if cur == 'BTC':
+        return f"https://live.blockcypher.com/btc/tx/{tx_hash}/"
+    elif cur == 'LTC':
+        return f"https://live.blockcypher.com/ltc/tx/{tx_hash}/"
+    elif cur in ['USDT', 'TRX']:
+        return f"https://tronscan.org/#/transaction/{tx_hash}"
+    return None

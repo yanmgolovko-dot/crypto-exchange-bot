@@ -21,6 +21,12 @@ router = Router()
 
 _LEGACY_REF_RE = re.compile(r"^ref(\d+)$", re.IGNORECASE)
 
+P2P_DISABLED_TEXT = (
+    "⏸ <b>Обмен временно приостановлен</b>\n\n"
+    "Приносим извинения за неудобства. Попробуйте позже.\n\n"
+    "💡 Пока что можно пользоваться режимом 🛒 <b>Шоп</b> — быстрая покупка BTC/LTC на ваш кошелёк."
+)
+
 
 def get_mode_selection_keyboard():
     builder = InlineKeyboardBuilder()
@@ -50,6 +56,16 @@ async def _resolve_referrer(payload: str):
         return int(m.group(1))
 
     return None
+
+
+async def _is_p2p_enabled() -> bool:
+    """Проверяет, включён ли режим P2P Обмена."""
+    try:
+        value = await db.get_setting('exchange_enabled', '1')
+        return value == '1'
+    except Exception as e:
+        logger.warning(f"Не удалось прочитать exchange_enabled: {e}")
+        return True
 
 
 @router.message(CommandStart())
@@ -122,6 +138,18 @@ async def select_exchange_mode(callback: CallbackQuery):
     except Exception:
         pass
 
+    p2p_enabled = await _is_p2p_enabled()
+    if not p2p_enabled:
+        await callback.message.answer(
+            P2P_DISABLED_TEXT,
+            reply_markup=InlineKeyboardBuilder()
+                .button(text="🛒 Перейти в Шоп", callback_data="mode_shop")
+                .as_markup(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
     await callback.message.answer(
         "Вы в режиме 🔄 <b>Обмен</b>.\n\n"
         "Здесь вы можете купить или продать популярные монеты через официальную биржу.\n"
@@ -144,6 +172,9 @@ async def change_mode_handler(message: Message):
 
 @router.message(F.text == "🔴 Купить (Обмен)")
 async def exchange_buy_start(message: Message):
+    if not await _is_p2p_enabled():
+        await message.answer(P2P_DISABLED_TEXT, parse_mode="HTML")
+        return
     await message.answer(
         "Выберите валюту, которую хотите <b>купить</b>:",
         reply_markup=exchange_crypto_select_keyboard("buy"),
@@ -153,6 +184,9 @@ async def exchange_buy_start(message: Message):
 
 @router.message(F.text == "🟢 Продать (Обмен)")
 async def exchange_sell_start(message: Message):
+    if not await _is_p2p_enabled():
+        await message.answer(P2P_DISABLED_TEXT, parse_mode="HTML")
+        return
     await message.answer(
         "Выберите валюту, которую хотите <b>продать</b>:",
         reply_markup=exchange_crypto_select_keyboard("sell"),

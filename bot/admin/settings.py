@@ -55,7 +55,7 @@ async def send_settings_menu(user_id: int, bot: Bot):
     keyboard.button(text=f"💰 Комиссия ({fee}%)", callback_data="admin_set_fee")
     keyboard.button(text=f"₿ Комиссия сети BTC ({network_fee_btc} sat)", callback_data="admin_set_network_fee_btc")
     keyboard.button(text=f"Ł Комиссия сети LTC ({network_fee_ltc} sat)", callback_data="admin_set_network_fee_ltc")
-    keyboard.button(text=f"🔄 Режим обмена: {exchange_status}", callback_data="admin_toggle_exchange")
+    keyboard.button(text=f"🔄 Режим Обмена (P2P): {exchange_status}", callback_data="admin_toggle_exchange")
     keyboard.button(text=f"📉 Мин. сумма ({min_amount} ₽)", callback_data="admin_set_min")
     keyboard.button(text=f"📈 Макс. сумма ({max_amount} ₽)", callback_data="admin_set_max")
     keyboard.button(text=f"🔄 Режим оплаты: {mode_text}", callback_data="admin_toggle_payment_mode")
@@ -74,7 +74,7 @@ async def send_settings_menu(user_id: int, bot: Bot):
         f"Текущая комиссия обменника: {fee}%\n"
         f"Сетевая комиссия BTC: {network_fee_btc} sat\n"
         f"Сетевая комиссия LTC: {network_fee_ltc} sat\n"
-        f"Режим обмена: {exchange_status}\n"
+        f"Режим Обмена (P2P): {exchange_status}\n"
         f"Мин. сумма обмена: {min_amount} ₽\n"
         f"Макс. сумма обмена: {max_amount} ₽\n"
         f"Режим оплаты: {mode_text}\n"
@@ -143,7 +143,7 @@ async def admin_settings_menu(callback: CallbackQuery):
     keyboard.button(text=f"💰 Комиссия ({fee}%)", callback_data="admin_set_fee")
     keyboard.button(text=f"₿ Комиссия сети BTC ({network_fee_btc} sat)", callback_data="admin_set_network_fee_btc")
     keyboard.button(text=f"Ł Комиссия сети LTC ({network_fee_ltc} sat)", callback_data="admin_set_network_fee_ltc")
-    keyboard.button(text=f"🔄 Режим обмена: {exchange_status}", callback_data="admin_toggle_exchange")
+    keyboard.button(text=f"🔄 Режим Обмена (P2P): {exchange_status}", callback_data="admin_toggle_exchange")
     keyboard.button(text=f"📉 Мин. сумма ({min_amount} ₽)", callback_data="admin_set_min")
     keyboard.button(text=f"📈 Макс. сумма ({max_amount} ₽)", callback_data="admin_set_max")
     keyboard.button(text=f"🔄 Режим оплаты: {mode_text}", callback_data="admin_toggle_payment_mode")
@@ -162,7 +162,7 @@ async def admin_settings_menu(callback: CallbackQuery):
         f"Текущая комиссия обменника: {fee}%\n"
         f"Сетевая комиссия BTC: {network_fee_btc} sat\n"
         f"Сетевая комиссия LTC: {network_fee_ltc} sat\n"
-        f"Режим обмена: {exchange_status}\n"
+        f"Режим Обмена (P2P): {exchange_status}\n"
         f"Мин. сумма обмена: {min_amount} ₽\n"
         f"Макс. сумма обмена: {max_amount} ₽\n"
         f"Режим оплаты: {mode_text}\n"
@@ -290,7 +290,7 @@ async def admin_set_network_fee_ltc_finish(message: Message, state: FSMContext, 
     await send_settings_menu(message.from_user.id, message.bot)
 
 
-# ==================== РЕЖИМ ОБМЕНА (ВКЛ/ВЫКЛ) ====================
+# ==================== РЕЖИМ ОБМЕНА (P2P) ВКЛ/ВЫКЛ ====================
 @router.callback_query(F.data == "admin_toggle_exchange")
 async def admin_toggle_exchange(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -302,8 +302,8 @@ async def admin_toggle_exchange(callback: CallbackQuery):
     new_value = '0' if current == '1' else '1'
     await db.settings.set_setting('exchange_enabled', new_value, admin_id)
     status_text = "включён" if new_value == '1' else "приостановлен"
-    logger.info(f"[ADMIN {admin_id}] Режим обмена {status_text}")
-    await callback.answer(f"Режим обмена {status_text}", show_alert=True)
+    logger.info(f"[ADMIN {admin_id}] Режим Обмена (P2P) {status_text}")
+    await callback.answer(f"Режим Обмена (P2P) {status_text}", show_alert=True)
     await admin_settings_menu(callback)
 
 
