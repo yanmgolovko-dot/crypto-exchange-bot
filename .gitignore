@@ -25,3 +25,7 @@ __pycache__/
 # Резервные копии (если есть)
 *.backup
 *.bak
+
+# Копии .env (но шаблон .env.example разрешён)
+.env.*
+!.env.example
