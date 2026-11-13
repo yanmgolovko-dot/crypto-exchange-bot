@@ -33,9 +33,18 @@ def _tx_hash_hint(crypto_type: str) -> str:
         return f"{cur} — ровно 64 hex-символа"
     return f"{cur} — минимум 32 hex-символа"
 
-def get_explorer_url(crypto_type: str, tx_hash: str) -> Optional[str]:
+def get_explorer_url(crypto_type: str, tx_hash) -> Optional[str]:
     if not tx_hash or tx_hash == 'N/A':
         return None
+    
+    # ЗАЩИТА ОТ СЛОВАРЯ
+    if isinstance(tx_hash, dict):
+        tx_hash = tx_hash.get('txid') or tx_hash.get('response_dict')
+        
+    if not tx_hash:
+        return None
+        
+    tx_hash = str(tx_hash).strip()
     cur = (crypto_type or "").upper()
     if cur == 'BTC':
         return f"https://live.blockcypher.com/btc/tx/{tx_hash}/"
@@ -632,7 +641,16 @@ async def admin_approve_order(
             return
         
         order = result['order']
-        tx_hash = result['tx_hash']
+        
+        # ИЗВЛЕКАЕМ ЧИСТУЮ СТРОКУ ИЗ СЛОВАРЯ (или строки)
+        raw_hash = result['tx_hash']
+        if isinstance(raw_hash, dict):
+            tx_hash_str = raw_hash.get('txid') or raw_hash.get('response_dict') or 'N/A'
+        else:
+            tx_hash_str = str(raw_hash).strip() if raw_hash else 'N/A'
+            
+        tx_hash_str = str(tx_hash_str).strip()
+        explorer_url = get_explorer_url(order.crypto_type, tx_hash_str)
         
         await coupon_service.check_and_give_activity_coupons(order.user_id)
         total_ex = await db.increment_total_exchanges(order.user_id)
@@ -642,12 +660,6 @@ async def admin_approve_order(
             try:
                 await bot.send_message(order.user_id, f"🎉 Поздравляем! Вы совершили {total_ex} обменов.\nВам начислен <b>1 билет</b> на Колесо Фортуны! 🎰\nПроверьте его в главном меню.", parse_mode="HTML")
             except: pass
-
-        # ЗАЩИТА ОТ ПРОБЕЛОВ И None
-        tx_hash_str = str(tx_hash).strip() if tx_hash else 'N/A'
-        explorer_url = get_explorer_url(order.crypto_type, tx_hash_str)
-        if explorer_url:
-            explorer_url = explorer_url.strip()
 
         user_text = (
             f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"

@@ -236,10 +236,19 @@ class BitcoinServiceBlockCypher:
         
         # 3. Отправляем в сеть (broadcast)
         service = Service(network='bitcoin')
-        txid = service.sendrawtransaction(raw_hex)
+        res = service.sendrawtransaction(raw_hex)
         
+        if not res:
+            raise Exception("Ошибка библиотеки: сервис вернул пустой ответ при отправке")
+            
+        # ИЗВЛЕКАЕМ ХЕШ ИЗ СЛОВАРЯ (если вернулся словарь)
+        if isinstance(res, dict):
+            txid = res.get('txid')
+        else:
+            txid = str(res)
+            
         if not txid:
-            raise Exception("Ошибка библиотеки: сервис вернул пустой txid при отправке")
+            raise Exception("Ошибка библиотеки: не удалось извлечь txid из ответа")
             
         logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
         return str(txid).strip()
@@ -413,10 +422,19 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         
         # 3. Отправляем в сеть (broadcast)
         service = Service(network='litecoin')
-        txid = service.sendrawtransaction(raw_hex)
+        res = service.sendrawtransaction(raw_hex)
         
+        if not res:
+            raise Exception("Ошибка библиотеки: сервис вернул пустой ответ при отправке")
+            
+        # ИЗВЛЕКАЕМ ХЕШ ИЗ СЛОВАРЯ (если вернулся словарь)
+        if isinstance(res, dict):
+            txid = res.get('txid')
+        else:
+            txid = str(res)
+            
         if not txid:
-            raise Exception("Ошибка библиотеки: сервис вернул пустой txid при отправке")
+            raise Exception("Ошибка библиотеки: не удалось извлечь txid из ответа")
             
         logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
         return str(txid).strip()
