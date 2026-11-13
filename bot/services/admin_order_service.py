@@ -23,6 +23,34 @@ class AdminOrderService:
         self.db = db
         self.wallet_manager = wallet_manager
 
+    async def _write_financial_records(self, uow, order, admin_id: int):
+        """Пишет две записи: income (маржа) + expense (сетевая).
+
+        Согласно варианту A: exchange_fee = commission_rub (чистая маржа),
+        network_fee_expense = network_fee_rub (компенсация сетевой).
+        """
+        commission = order.commission_rub or 0
+        network_fee = order.network_fee_rub or 0
+
+        if commission > 0:
+            await uow.finance.add_financial_record(
+                record_type='income',
+                category='exchange_fee',
+                amount=commission,
+                description=f'Маржа обменника по заявке #{order.id}',
+                order_id=order.id,
+                created_by=admin_id
+            )
+        if network_fee > 0:
+            await uow.finance.add_financial_record(
+                record_type='expense',
+                category='network_fee_expense',
+                amount=network_fee,
+                description=f'Сетевая комиссия по заявке #{order.id}',
+                order_id=order.id,
+                created_by=admin_id
+            )
+
     async def approve_order_auto(
         self,
         order_id: int,
@@ -31,8 +59,7 @@ class AdminOrderService:
     ) -> Dict[str, Any]:
         """
         Подтверждение заявки в автоматическом режиме.
-        Выбирает активный кошелёк с достаточным балансом и отправляет криптовалюту.
-        Комиссия сети фиксированная (FIXED_FEE_SAT), проверка загрузки сети не выполняется.
+        Комиссия сети фиксированная (из настроек), проверка загрузки сети не выполняется.
         """
         logger.info(f"[ADMIN {admin_id}] Автоматическое подтверждение заявки #{order_id}")
 
@@ -45,7 +72,6 @@ class AdminOrderService:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} имеет статус {order.status}, требуется paid")
             return {'success': False, 'error': f'Заявка не в статусе "оплачена". Текущий статус: {order.status}'}
 
-        # Атомарно пытаемся заблокировать заявку (обновить статус на processing)
         async with self.db.uow() as uow:
             cursor = await uow._connection.conn.execute("""
                 UPDATE exchange_orders
@@ -67,14 +93,8 @@ class AdminOrderService:
             await self.db.update_order_status(order_id, 'paid', 'Нет кошельков, блокировка снята')
             return {'success': False, 'error': f'Нет активных кошельков {order.crypto_type}'}
 
-        # Фиксированная комиссия сети — платит обменник
-        if order.crypto_type == 'BTC':
-            fee_estimate = self.wallet_manager.btc.FIXED_FEE_SAT / 1e8
-        elif order.crypto_type == 'LTC':
-            fee_estimate = self.wallet_manager.ltc.FIXED_FEE_SAT / 1e8
-        else:
-            fee_estimate = 0.0
-
+        fee_sat = await self.wallet_manager.get_fixed_fee_sat(order.crypto_type)
+        fee_estimate = fee_sat / 1e8
         required_amount = order.amount_crypto + fee_estimate
         logger.debug(f"Необходимая сумма с учётом комиссии ({fee_estimate} {order.crypto_type}): {required_amount} {order.crypto_type}")
 
@@ -121,21 +141,11 @@ class AdminOrderService:
                 f"Подтверждено админом {admin_id}. TX: {tx_hash}",
                 admin_id
             )
-            await uow.finance.add_financial_record(
-                record_type='income',
-                category='exchange_fee',
-                amount=order.amount_rub * order.fee_percent / 100,
-                description=f'Комиссия с заявки #{order_id}',
-                order_id=order_id,
-                created_by=admin_id
-            )
+            await self._write_financial_records(uow, order, admin_id)
             await uow.commit()
-        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, комиссия записана")
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, финансовые записи созданы")
 
-        # Выдаём купоны за активность пользователю
         await coupon_service.check_and_give_activity_coupons(order.user_id)
-
-        # Начисляем партнёрские вознаграждения
         await partner_service.process_order_reward(order)
 
         return {
@@ -145,9 +155,6 @@ class AdminOrderService:
         }
 
     async def approve_order_manual(self, order_id: int, admin_id: int) -> bool:
-        """
-        Ручное подтверждение оплаты: переводит заявку из 'paid' в 'processing'.
-        """
         logger.info(f"[ADMIN {admin_id}] Ручное подтверждение заявки #{order_id}")
         order = await self.db.get_order(order_id)
         if not order:
@@ -160,7 +167,6 @@ class AdminOrderService:
             )
             return False
 
-        # Атомарный перевод paid → processing
         ok = await self.db.orders.update_order_status(
             order_id, 'processing', expected_status='paid'
         )
@@ -181,9 +187,6 @@ class AdminOrderService:
         admin_id: int,
         bot: Bot
     ) -> Tuple[bool, str]:
-        """
-        Завершает заявку с валидированным хешем.
-        """
         logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
 
         order = await self.db.get_order(order_id)
@@ -195,7 +198,6 @@ class AdminOrderService:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} уже завершена")
             return False, "Заявка уже завершена"
 
-        # 1) Валидация и сохранение хеша
         ok, err = await self.db.orders.update_order_tx_hash_checked(order_id, tx_hash, admin_id)
         if not ok:
             logger.warning(
@@ -204,7 +206,6 @@ class AdminOrderService:
             )
             return False, err
 
-        # 2) Хеш валиден и сохранён — завершаем заявку и пишем финансы
         async with self.db.uow() as uow:
             await uow.orders.update_order_status(
                 order_id,
@@ -212,21 +213,11 @@ class AdminOrderService:
                 f"Хеш введён админом {admin_id}",
                 admin_id
             )
-            await uow.finance.add_financial_record(
-                record_type='income',
-                category='exchange_fee',
-                amount=order.amount_rub * order.fee_percent / 100,
-                description=f'Комиссия с заявки #{order_id}',
-                order_id=order_id,
-                created_by=admin_id
-            )
+            await self._write_financial_records(uow, order, admin_id)
             await uow.commit()
-        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, комиссия записана")
+        logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, финансовые записи созданы")
 
-        # Выдаём купоны за активность
         await coupon_service.check_and_give_activity_coupons(order.user_id)
-
-        # Начисляем партнёрские вознаграждения
         await partner_service.process_order_reward(order)
 
         return True, ""

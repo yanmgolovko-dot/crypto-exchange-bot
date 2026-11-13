@@ -363,6 +363,9 @@ class ConfirmationStep(OrderCreationStep):
         self.data.net_amount = calc_result['net_amount']
         self.data.amount_crypto = calc_result['amount_crypto']
         self.data.fee_percent = calc_result['fee_percent']
+        self.data.commission_rub = calc_result.get('commission_rub', 0)
+        self.data.network_fee_rub = calc_result.get('network_fee_rub', 0)
+        self.data.network_fee_crypto = calc_result.get('network_fee_crypto', 0)
 
         # СКРЫТАЯ КОМИССИЯ: клиент видит только сумму к получению и сумму к оплате
         text = (
@@ -396,10 +399,20 @@ class ConfirmationStep(OrderCreationStep):
                     return True
 
             order_id = await services['order_service'].create_order(
-                user_id=self.data.user_id, username=self.data.username, crypto_type=self.data.crypto_type,
-                amount_rub=self.data.gross_amount, amount_crypto=self.data.amount_crypto, rate=self.data.rate,
-                fee_percent=self.data.fee_percent, crypto_address=self.data.wallet_address, promo_code=self.data.promo_code,
-                discount_percent=self.data.discount_percent, coupon_id=self.data.coupon_id
+                user_id=self.data.user_id,
+                username=self.data.username,
+                crypto_type=self.data.crypto_type,
+                amount_rub=self.data.gross_amount,
+                amount_crypto=self.data.amount_crypto,
+                rate=self.data.rate,
+                fee_percent=self.data.fee_percent,
+                crypto_address=self.data.wallet_address,
+                promo_code=self.data.promo_code,
+                discount_percent=self.data.discount_percent,
+                coupon_id=self.data.coupon_id,
+                commission_rub=self.data.commission_rub,
+                network_fee_rub=self.data.network_fee_rub,
+                network_fee_crypto=self.data.network_fee_crypto
             )
             db = services['db']
             order = await db.get_order(order_id)

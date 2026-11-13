@@ -75,6 +75,9 @@ def init_db_sync():
             order_type TEXT DEFAULT 'shop',
             network TEXT,
             user_payment_details TEXT,
+            commission_rub REAL DEFAULT 0,
+            network_fee_rub REAL DEFAULT 0,
+            network_fee_crypto REAL DEFAULT 0,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
@@ -149,6 +152,11 @@ def init_db_sync():
     """)
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('payment_mode', 'auto')")
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('reminders_enabled', '1')")
+    # Фиксированные комиссии сети (sat). Платит клиент (скрыто), уходит на сеть.
+    c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('network_fee_btc_sat', '800')")
+    c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('network_fee_ltc_sat', '2000')")
+    # Флаг «режим обмена»: 1 = обмен включён, 0 = временно приостановлен
+    c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('exchange_enabled', '1')")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_sessions (
@@ -457,6 +465,22 @@ def init_db_sync():
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN user_payment_details TEXT")
     except sqlite3.OperationalError: pass
+    # Разбивка наценки: маржа обменника + сетевая комиссия
+    try:
+        c.execute("ALTER TABLE exchange_orders ADD COLUMN commission_rub REAL DEFAULT 0")
+        logger.info("Колонка commission_rub добавлена в exchange_orders")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка commission_rub уже существует")
+    try:
+        c.execute("ALTER TABLE exchange_orders ADD COLUMN network_fee_rub REAL DEFAULT 0")
+        logger.info("Колонка network_fee_rub добавлена в exchange_orders")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка network_fee_rub уже существует")
+    try:
+        c.execute("ALTER TABLE exchange_orders ADD COLUMN network_fee_crypto REAL DEFAULT 0")
+        logger.info("Колонка network_fee_crypto добавлена в exchange_orders")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка network_fee_crypto уже существует")
     try:
         c.execute("ALTER TABLE reviews ADD COLUMN fake_exchanges INTEGER")
     except sqlite3.OperationalError: pass
@@ -487,9 +511,8 @@ def init_db_sync():
         logger.error(f"Ошибка при инициализации счётчика заявок: {e}")
 
     # ===== МИГРАЦИЯ: фиксированная комиссия сети =====
-    # Сетевой воркер удалён (комиссия теперь фиксированная), поэтому заявки
-    # в статусе waiting_network_fee больше никто не обработает.
-    # Переводим их обратно в 'paid' — админ подтвердит вручную.
+    # Заявки в статусе waiting_network_fee больше никто не обработает (воркер удалён),
+    # переводим их в 'paid' — админ подтвердит вручную.
     try:
         cursor = conn.execute("UPDATE exchange_orders SET status = 'paid' WHERE status = 'waiting_network_fee'")
         if cursor.rowcount > 0:

@@ -40,6 +40,11 @@ async def send_settings_menu(user_id: int, bot: Bot):
     user_notify_enabled = await db.settings.get_setting('notify_new_users', '1')
     user_notify_status = "✅ Вкл" if user_notify_enabled == '1' else "❌ Выкл"
 
+    network_fee_btc = await db.settings.get_setting('network_fee_btc_sat', '800')
+    network_fee_ltc = await db.settings.get_setting('network_fee_ltc_sat', '2000')
+    exchange_enabled = await db.settings.get_setting('exchange_enabled', '1')
+    exchange_status = "✅ Вкл" if exchange_enabled == '1' else "⏸ Выкл"
+
     welcome_config = await db.settings.get_json_setting('welcome_coupon_config', {})
     activity_config = await db.settings.get_json_setting('activity_coupon_config', {})
 
@@ -48,6 +53,9 @@ async def send_settings_menu(user_id: int, bot: Bot):
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text=f"💰 Комиссия ({fee}%)", callback_data="admin_set_fee")
+    keyboard.button(text=f"₿ Комиссия сети BTC ({network_fee_btc} sat)", callback_data="admin_set_network_fee_btc")
+    keyboard.button(text=f"Ł Комиссия сети LTC ({network_fee_ltc} sat)", callback_data="admin_set_network_fee_ltc")
+    keyboard.button(text=f"🔄 Режим обмена: {exchange_status}", callback_data="admin_toggle_exchange")
     keyboard.button(text=f"📉 Мин. сумма ({min_amount} ₽)", callback_data="admin_set_min")
     keyboard.button(text=f"📈 Макс. сумма ({max_amount} ₽)", callback_data="admin_set_max")
     keyboard.button(text=f"🔄 Режим оплаты: {mode_text}", callback_data="admin_toggle_payment_mode")
@@ -57,13 +65,16 @@ async def send_settings_menu(user_id: int, bot: Bot):
     keyboard.button(text=f"🎁 Купоны за активность {activity_status}", callback_data="admin_edit_activity_coupon")
     keyboard.button(text=f"📋 След. № заявки ({next_order})", callback_data="admin_set_next_order_number")
     keyboard.button(text=f"🔔 Напоминания {reminders_status}", callback_data="admin_toggle_reminders")
-    keyboard.button(text=f"👤 Уведомления о юзерах {user_notify_status}", callback_data="admin_toggle_user_notify") # <-- НОВАЯ КНОПКА
+    keyboard.button(text=f"👤 Уведомления о юзерах {user_notify_status}", callback_data="admin_toggle_user_notify")
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
     text = (
         "⚙️ <b>Настройки обменника</b>\n\n"
-        f"Текущая комиссия: {fee}%\n"
+        f"Текущая комиссия обменника: {fee}%\n"
+        f"Сетевая комиссия BTC: {network_fee_btc} sat\n"
+        f"Сетевая комиссия LTC: {network_fee_ltc} sat\n"
+        f"Режим обмена: {exchange_status}\n"
         f"Мин. сумма обмена: {min_amount} ₽\n"
         f"Макс. сумма обмена: {max_amount} ₽\n"
         f"Режим оплаты: {mode_text}\n"
@@ -104,6 +115,11 @@ async def admin_settings_menu(callback: CallbackQuery):
     user_notify_enabled = await db.settings.get_setting('notify_new_users', '1')
     user_notify_status = "✅ Вкл" if user_notify_enabled == '1' else "❌ Выкл"
 
+    network_fee_btc = await db.settings.get_setting('network_fee_btc_sat', '800')
+    network_fee_ltc = await db.settings.get_setting('network_fee_ltc_sat', '2000')
+    exchange_enabled = await db.settings.get_setting('exchange_enabled', '1')
+    exchange_status = "✅ Вкл" if exchange_enabled == '1' else "⏸ Выкл"
+
     welcome_config = await db.settings.get_json_setting('welcome_coupon_config', {
         "enabled": False,
         "discount_type": "percent",
@@ -125,6 +141,9 @@ async def admin_settings_menu(callback: CallbackQuery):
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text=f"💰 Комиссия ({fee}%)", callback_data="admin_set_fee")
+    keyboard.button(text=f"₿ Комиссия сети BTC ({network_fee_btc} sat)", callback_data="admin_set_network_fee_btc")
+    keyboard.button(text=f"Ł Комиссия сети LTC ({network_fee_ltc} sat)", callback_data="admin_set_network_fee_ltc")
+    keyboard.button(text=f"🔄 Режим обмена: {exchange_status}", callback_data="admin_toggle_exchange")
     keyboard.button(text=f"📉 Мин. сумма ({min_amount} ₽)", callback_data="admin_set_min")
     keyboard.button(text=f"📈 Макс. сумма ({max_amount} ₽)", callback_data="admin_set_max")
     keyboard.button(text=f"🔄 Режим оплаты: {mode_text}", callback_data="admin_toggle_payment_mode")
@@ -134,13 +153,16 @@ async def admin_settings_menu(callback: CallbackQuery):
     keyboard.button(text=f"🎁 Купоны за активность {activity_status}", callback_data="admin_edit_activity_coupon")
     keyboard.button(text=f"📋 След. № заявки ({next_order})", callback_data="admin_set_next_order_number")
     keyboard.button(text=f"🔔 Напоминания {reminders_status}", callback_data="admin_toggle_reminders")
-    keyboard.button(text=f"👤 Уведомления о юзерах {user_notify_status}", callback_data="admin_toggle_user_notify") # <-- НОВАЯ КНОПКА
+    keyboard.button(text=f"👤 Уведомления о юзерах {user_notify_status}", callback_data="admin_toggle_user_notify")
     keyboard.button(text="🔙 Назад", callback_data="admin_back_main")
     keyboard.adjust(1)
 
     text = (
         "⚙️ <b>Настройки обменника</b>\n\n"
-        f"Текущая комиссия: {fee}%\n"
+        f"Текущая комиссия обменника: {fee}%\n"
+        f"Сетевая комиссия BTC: {network_fee_btc} sat\n"
+        f"Сетевая комиссия LTC: {network_fee_ltc} sat\n"
+        f"Режим обмена: {exchange_status}\n"
         f"Мин. сумма обмена: {min_amount} ₽\n"
         f"Макс. сумма обмена: {max_amount} ₽\n"
         f"Режим оплаты: {mode_text}\n"
@@ -164,6 +186,7 @@ async def admin_settings_menu(callback: CallbackQuery):
     )
     await callback.answer()
 
+
 # ==================== НАСТРОЙКА УВЕДОМЛЕНИЙ О ЮЗЕРАХ ====================
 @router.callback_query(F.data == "admin_toggle_user_notify")
 async def admin_toggle_user_notify(callback: CallbackQuery):
@@ -177,6 +200,112 @@ async def admin_toggle_user_notify(callback: CallbackQuery):
     await db.settings.set_setting('notify_new_users', new_state, admin_id)
     await callback.answer(f"Уведомления о новых юзерах {'включены' if new_state == '1' else 'отключены'}", show_alert=True)
     await admin_settings_menu(callback)
+
+
+# ==================== КОМИССИЯ СЕТИ BTC ====================
+@router.callback_query(F.data == "admin_set_network_fee_btc")
+async def admin_set_network_fee_btc_start(callback: CallbackQuery, state: FSMContext):
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    current = await db.settings.get_setting('network_fee_btc_sat', '800')
+    await state.set_state(AdminStates.changing_network_fee_btc)
+    await safe_edit_message(
+        callback.message,
+        f"₿ <b>Комиссия сети Bitcoin</b>\n\n"
+        f"Текущее значение: <b>{current} sat</b>\n\n"
+        f"Введите новое значение в satoshi (целое число > 0):\n"
+        f"Например: <code>800</code> = 0.00000800 BTC ≈ $0.8\n\n"
+        f"Значение закладывается в сумму к оплате клиента скрыто.\n"
+        f"Платит обменник из этой наценки.",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.changing_network_fee_btc)
+async def admin_set_network_fee_btc_finish(message: Message, state: FSMContext, wallet_manager=None):
+    admin_id = message.from_user.id
+    try:
+        new_fee = int(message.text.strip())
+        if new_fee <= 0 or new_fee > 100000:
+            await message.answer("❌ Введите целое число от 1 до 100000 sat.")
+            return
+    except ValueError:
+        await message.answer("❌ Введите целое число.")
+        return
+
+    await db.settings.set_setting('network_fee_btc_sat', str(new_fee), admin_id)
+    if wallet_manager is not None:
+        wallet_manager.invalidate_fee_cache()
+    logger.info(f"[ADMIN {admin_id}] Комиссия сети BTC изменена на {new_fee} sat")
+    await message.answer(f"✅ Комиссия сети BTC установлена: <b>{new_fee} sat</b>", parse_mode="HTML")
+    await state.clear()
+    await send_settings_menu(message.from_user.id, message.bot)
+
+
+# ==================== КОМИССИЯ СЕТИ LTC ====================
+@router.callback_query(F.data == "admin_set_network_fee_ltc")
+async def admin_set_network_fee_ltc_start(callback: CallbackQuery, state: FSMContext):
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    current = await db.settings.get_setting('network_fee_ltc_sat', '2000')
+    await state.set_state(AdminStates.changing_network_fee_ltc)
+    await safe_edit_message(
+        callback.message,
+        f"Ł <b>Комиссия сети Litecoin</b>\n\n"
+        f"Текущее значение: <b>{current} sat</b>\n\n"
+        f"Введите новое значение в satoshi (целое число > 0):\n"
+        f"Например: <code>2000</code> = 0.00002000 LTC ≈ $0.02\n\n"
+        f"Значение закладывается в сумму к оплате клиента скрыто.\n"
+        f"Платит обменник из этой наценки.",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.changing_network_fee_ltc)
+async def admin_set_network_fee_ltc_finish(message: Message, state: FSMContext, wallet_manager=None):
+    admin_id = message.from_user.id
+    try:
+        new_fee = int(message.text.strip())
+        if new_fee <= 0 or new_fee > 100000:
+            await message.answer("❌ Введите целое число от 1 до 100000 sat.")
+            return
+    except ValueError:
+        await message.answer("❌ Введите целое число.")
+        return
+
+    await db.settings.set_setting('network_fee_ltc_sat', str(new_fee), admin_id)
+    if wallet_manager is not None:
+        wallet_manager.invalidate_fee_cache()
+    logger.info(f"[ADMIN {admin_id}] Комиссия сети LTC изменена на {new_fee} sat")
+    await message.answer(f"✅ Комиссия сети LTC установлена: <b>{new_fee} sat</b>", parse_mode="HTML")
+    await state.clear()
+    await send_settings_menu(message.from_user.id, message.bot)
+
+
+# ==================== РЕЖИМ ОБМЕНА (ВКЛ/ВЫКЛ) ====================
+@router.callback_query(F.data == "admin_toggle_exchange")
+async def admin_toggle_exchange(callback: CallbackQuery):
+    admin_id = callback.from_user.id
+    if not await is_admin(admin_id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    current = await db.settings.get_setting('exchange_enabled', '1')
+    new_value = '0' if current == '1' else '1'
+    await db.settings.set_setting('exchange_enabled', new_value, admin_id)
+    status_text = "включён" if new_value == '1' else "приостановлен"
+    logger.info(f"[ADMIN {admin_id}] Режим обмена {status_text}")
+    await callback.answer(f"Режим обмена {status_text}", show_alert=True)
+    await admin_settings_menu(callback)
+
 
 # ==================== НАСТРОЙКА ПРИВЕТСТВЕННЫХ КУПОНОВ ====================
 @router.callback_query(F.data == "admin_edit_welcome_coupon")
@@ -648,7 +777,7 @@ async def admin_toggle_reminders(callback: CallbackQuery):
     await admin_settings_menu(callback)
 
 
-# ==================== ИЗМЕНЕНИЕ КОМИССИИ ====================
+# ==================== ИЗМЕНЕНИЕ КОМИССИИ ОБМЕННИКА ====================
 @router.callback_query(F.data == "admin_set_fee")
 async def admin_set_fee_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -660,7 +789,7 @@ async def admin_set_fee_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.changing_fee)
     await safe_edit_message(
         callback.message,
-        f"💰 <b>Изменение комиссии</b>\n\n"
+        f"💰 <b>Изменение комиссии обменника</b>\n\n"
         f"Текущая комиссия: {current_fee}%\n\n"
         f"Введите новую комиссию в процентах (например: 2.5):",
         parse_mode="HTML"

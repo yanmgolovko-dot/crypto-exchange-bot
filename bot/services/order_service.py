@@ -21,9 +21,24 @@ class OrderService:
         'LTC': 4.5
     }
 
+    DEFAULT_NETWORK_FEE_SAT = {
+        'BTC': 800,
+        'LTC': 2000
+    }
+
     def __init__(self, db: Database, crypto_api):
         self.db = db
         self.crypto_api = crypto_api
+
+    async def get_network_fee_sat(self, crypto_type: str) -> int:
+        """Читает фиксированную комиссию сети из настроек (в satoshi)."""
+        key = f'network_fee_{crypto_type.lower()}_sat'
+        default = self.DEFAULT_NETWORK_FEE_SAT.get(crypto_type, 0)
+        try:
+            value = await self.db.get_setting(key, str(default))
+            return int(value)
+        except (ValueError, TypeError):
+            return default
 
     async def calculate_order(
         self,
@@ -94,9 +109,18 @@ class OrderService:
         target_fee_rub = target_fee_usd * usd_rub
         logger.debug(f"Комиссия по проценту: {fee_usd_percent:.2f} USD, финальная: {target_fee_usd:.2f} USD, в рублях: {target_fee_rub:.2f}")
 
-        # Скрытая фиксированная сетевая комиссия больше не начисляется клиенту —
-        # её платит обменник (см. crypto_wallets.FIXED_FEE_SAT).
-        gross_raw = net_amount + target_fee_rub
+        # Скрытая сетевая комиссия: закладывается в gross_amount, клиент её не видит
+        # отдельной строкой, но платит. Платит её обменник из gross_amount в сеть.
+        network_fee_sat = await self.get_network_fee_sat(crypto_type)
+        network_fee_crypto = network_fee_sat / 1e8
+        network_fee_rub = network_fee_crypto * rate
+        logger.debug(
+            f"Скрытая сетевая комиссия: {network_fee_sat} sat = "
+            f"{network_fee_crypto:.8f} {crypto_type} = {network_fee_rub:.2f} ₽"
+        )
+
+        # gross = net_amount (клиенту) + маржа обменника + сетевая (скрыто)
+        gross_raw = net_amount + target_fee_rub + network_fee_rub
         gross_rounded = math.ceil(gross_raw / 100) * 100
         amount_crypto = net_amount / rate
 
@@ -115,7 +139,10 @@ class OrderService:
             'input_type': input_type,
             'fee_usd': round(target_fee_usd, 2),
             'usd_rub': round(usd_rub, 2),
-            'commission_rub': round(target_fee_rub, 2)
+            'commission_rub': round(target_fee_rub, 2),
+            'network_fee_rub': round(network_fee_rub, 2),
+            'network_fee_crypto': round(network_fee_crypto, 8),
+            'network_fee_sat': network_fee_sat,
         }
         logger.info(f"Результат расчёта: {result}")
         return result
@@ -135,7 +162,10 @@ class OrderService:
         coupon_id: Optional[int] = None,
         order_type: str = 'shop',
         network: Optional[str] = None,
-        user_payment_details: Optional[str] = None
+        user_payment_details: Optional[str] = None,
+        commission_rub: float = 0,
+        network_fee_rub: float = 0,
+        network_fee_crypto: float = 0
     ) -> int:
         logger.info(f"Создание заявки ({order_type}) для пользователя {user_id}, {crypto_type}, сумма {amount_rub} ₽")
 
@@ -157,7 +187,10 @@ class OrderService:
                 coupon_id=coupon_id,
                 order_type=order_type,
                 network=network,
-                user_payment_details=user_payment_details
+                user_payment_details=user_payment_details,
+                commission_rub=commission_rub,
+                network_fee_rub=network_fee_rub,
+                network_fee_crypto=network_fee_crypto
             )
             logger.info(f"Заявка #{order_id} создана в БД")
             if promo_code:

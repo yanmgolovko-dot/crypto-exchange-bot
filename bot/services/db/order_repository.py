@@ -42,9 +42,11 @@ class Order:
     order_type: Optional[str] = 'shop'
     network: Optional[str] = None
     user_payment_details: Optional[str] = None
+    commission_rub: float = 0.0
+    network_fee_rub: float = 0.0
+    network_fee_crypto: float = 0.0
 
 
-# РАЗРЕШАЕМ ВВОД ХЕША КАК В ПРОЦЕССИНГЕ, ТАК И В PENDING (для P2P Sell)
 _TX_HASH_ALLOWED_STATUSES = {"processing", "pending"}
 
 
@@ -61,17 +63,23 @@ class OrderRepository(BaseRepository):
                            coupon_id: Optional[int] = None,
                            order_type: str = 'shop',
                            network: Optional[str] = None,
-                           user_payment_details: Optional[str] = None) -> int:
+                           user_payment_details: Optional[str] = None,
+                           commission_rub: float = 0,
+                           network_fee_rub: float = 0,
+                           network_fee_crypto: float = 0) -> int:
         """
         Создаёт новую заявку со статусом 'pending' и присваивает публичный номер из счётчика.
         """
-        logger.debug(f"Создание заявки для user_id={user_id}, crypto={crypto_type}, сумма={amount_rub}, type={order_type}")
-        
+        logger.debug(
+            f"Создание заявки для user_id={user_id}, crypto={crypto_type}, "
+            f"сумма={amount_rub}, type={order_type}, "
+            f"commission_rub={commission_rub}, network_fee_rub={network_fee_rub}"
+        )
+
         if not coupon_id:
             coupon_id = None
 
         async with self.lock:
-            # Получаем следующий публичный номер
             cursor = await self.conn.execute(
                 "SELECT value FROM system_settings WHERE key = 'next_order_number'"
             )
@@ -92,17 +100,18 @@ class OrderRepository(BaseRepository):
                 )
                 logger.info(f"Счётчик отсутствовал, создан со значением {public_number + 1}")
 
-            # Вставляем заявку с полученным номером
             cursor = await self.conn.execute("""
                 INSERT INTO exchange_orders 
                 (user_id, username, crypto_type, amount_rub, amount_crypto, rate, 
                  fee_percent, crypto_address, status, promo_code, discount_percent, 
-                 reminder_count, coupon_id, public_order_number, order_type, network, user_payment_details)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, ?, ?, ?, ?)
+                 reminder_count, coupon_id, public_order_number, order_type, network,
+                 user_payment_details, commission_rub, network_fee_rub, network_fee_crypto)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
             """, (user_id, username, crypto_type, amount_rub, amount_crypto, 
                   rate, fee_percent, crypto_address, promo_code, discount_percent, 
-                  coupon_id, public_number, order_type, network, user_payment_details))
+                  coupon_id, public_number, order_type, network, user_payment_details,
+                  commission_rub, network_fee_rub, network_fee_crypto))
             row = await cursor.fetchone()
             order_id = row[0]
             await self.conn.commit()

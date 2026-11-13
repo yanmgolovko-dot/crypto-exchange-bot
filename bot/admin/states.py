@@ -6,6 +6,8 @@ class AdminStates(StatesGroup):
     changing_fee = State()
     changing_min = State()
     changing_max = State()
+    changing_network_fee_btc = State()
+    changing_network_fee_ltc = State()
 
     # Банковские карты
     adding_bank_card = State()

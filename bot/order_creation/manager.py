@@ -10,6 +10,7 @@ from .exceptions import OrderCreationError
 
 logger = logging.getLogger(__name__)
 
+
 class OrderCreationManager:
     def __init__(self, state: FSMContext, user_id: int, username: Optional[str]):
         self.state = state
@@ -17,6 +18,23 @@ class OrderCreationManager:
         self.current_step: Optional[OrderCreationStep] = None
 
     async def start(self, message: Message, services: Dict[str, Any]):
+        # Проверка режима обмена: если админ приостановил приём заявок
+        try:
+            db = services.get('db')
+            if db is not None:
+                enabled = await db.settings.get_setting('exchange_enabled', '1')
+                if enabled != '1':
+                    logger.info(f"[{self.data.user_id}] Создание заявки заблокировано: exchange_enabled=0")
+                    await message.answer(
+                        "⏸ <b>Обмен временно приостановлен</b>\n\n"
+                        "Приносим извинения за неудобства. "
+                        "Попробуйте создать заявку позже.",
+                        parse_mode="HTML"
+                    )
+                    return
+        except Exception as e:
+            logger.error(f"[{self.data.user_id}] Ошибка проверки exchange_enabled: {e}", exc_info=True)
+
         self.current_step = SelectCryptoStep(self.data, self.state)
         logger.info(f"[{self.data.user_id}] Запуск процесса создания заявки. Первый шаг: {self.current_step.__class__.__name__}")
         await self.current_step.display(message, services)
