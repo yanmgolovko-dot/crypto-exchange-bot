@@ -643,10 +643,12 @@ async def admin_approve_order(
                 await bot.send_message(order.user_id, f"🎉 Поздравляем! Вы совершили {total_ex} обменов.\nВам начислен <b>1 билет</b> на Колесо Фортуны! 🎰\nПроверьте его в главном меню.", parse_mode="HTML")
             except: pass
 
-        # ЗАЩИТА ОТ None
-        tx_hash_str = str(tx_hash) if tx_hash else 'N/A'
+        # ЗАЩИТА ОТ ПРОБЕЛОВ И None
+        tx_hash_str = str(tx_hash).strip() if tx_hash else 'N/A'
         explorer_url = get_explorer_url(order.crypto_type, tx_hash_str)
-        
+        if explorer_url:
+            explorer_url = explorer_url.strip()
+
         user_text = (
             f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"
             f"Криптовалюта отправлена:\n"
@@ -809,14 +811,10 @@ async def admin_manual_complete(callback: CallbackQuery, bot: Bot, admin_order_s
 
     order_id = int(callback.data.split("_")[3])
     order = await db.get_order(order_id)
-    fee_amount = order.amount_rub * order.fee_percent / 100
 
     async with db.uow() as uow:
         await uow.orders.update_order_status(order_id, "completed", f"Подтверждено админом {admin_id} вручную", admin_id)
-        await uow.finance.add_financial_record(
-            record_type='income', category='exchange_fee', amount=fee_amount,
-            description=f'Комиссия с заявки #{order_id}', order_id=order_id, created_by=admin_id
-        )
+        await admin_order_service._write_financial_records(uow, order, admin_id)
         await uow.commit()
 
     await coupon_service.check_and_give_activity_coupons(order.user_id)

@@ -242,7 +242,7 @@ class BitcoinServiceBlockCypher:
             raise Exception("Ошибка библиотеки: сервис вернул пустой txid при отправке")
             
         logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
-        return str(txid)
+        return str(txid).strip()
 
 
 class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
@@ -419,7 +419,7 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
             raise Exception("Ошибка библиотеки: сервис вернул пустой txid при отправке")
             
         logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
-        return str(txid)
+        return str(txid).strip()
 
 
 class CryptoWalletManager:
