@@ -226,9 +226,18 @@ class BitcoinServiceBlockCypher:
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
             
+        # Подписываем транзакцию
         txid = t.sign(keys=[key])
-        logger.info(f"Транзакция подписана, txid: {txid}")
-        return txid
+        
+        # ЖЕЛЕЗОБЕТОННАЯ ЗАЩИТА: если библиотека вернула None (баг API), берем хеш из самого объекта
+        if not txid:
+            txid = getattr(t, 'txid', None)
+            
+        if not txid:
+            raise Exception("Ошибка библиотеки: не удалось получить хеш подписанной транзакции")
+            
+        logger.info(f"Транзакция успешно подписана и отправлена, txid: {txid}")
+        return str(txid)
 
 
 class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
@@ -390,9 +399,18 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
             
+        # Подписываем транзакцию
         txid = t.sign(keys=[key])
-        logger.info(f"Транзакция подписана, txid: {txid}")
-        return txid
+        
+        # ЖЕЛЕЗОБЕТОННАЯ ЗАЩИТА
+        if not txid:
+            txid = getattr(t, 'txid', None)
+            
+        if not txid:
+            raise Exception("Ошибка библиотеки: не удалось получить хеш подписанной транзакции")
+            
+        logger.info(f"Транзакция успешно подписана и отправлена, txid: {txid}")
+        return str(txid)
 
 
 class CryptoWalletManager:

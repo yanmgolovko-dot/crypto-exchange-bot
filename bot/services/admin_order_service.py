@@ -131,7 +131,8 @@ class AdminOrderService:
             await self.db.update_order_status(order_id, 'paid', f'Ошибка отправки: {tx_result.get("error")}')
             return {'success': False, 'error': tx_result.get('error', 'Неизвестная ошибка')}
 
-        tx_hash = tx_result.get('tx_hash', 'N/A')
+        # Защита от None
+        tx_hash = tx_result.get('tx_hash') or 'N/A'
         logger.info(f"[ADMIN {admin_id}] Транзакция отправлена, tx_hash={tx_hash}")
 
         async with self.db.uow() as uow:

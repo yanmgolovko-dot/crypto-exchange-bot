@@ -223,7 +223,7 @@ async def admin_orders_search_by_id(message: Message, state: FSMContext, bot: Bo
 
     safe_username = html.escape(order.username) if order.username else 'N/A'
     safe_address = html.escape(order.crypto_address)
-    safe_tx_hash = html.escape(order.tx_hash) if order.tx_hash else ''
+    safe_tx_hash = html.escape(str(order.tx_hash)) if order.tx_hash else ''
 
     text = (
         f"📋 <b>Заявка #{order.public_order_number or order.id}</b>\n\n"
@@ -317,7 +317,7 @@ async def admin_order_manage(callback: CallbackQuery, bot: Bot):
 
     safe_username = html.escape(order.username) if order.username else 'N/A'
     safe_address = html.escape(order.crypto_address)
-    safe_tx_hash = html.escape(order.tx_hash) if order.tx_hash else ''
+    safe_tx_hash = html.escape(str(order.tx_hash)) if order.tx_hash else ''
 
     text = (
         f"📋 <b>Заявка #{order.public_order_number or order.id}</b>\n\n"
@@ -392,7 +392,7 @@ async def admin_order_check(callback: CallbackQuery, bot: Bot):
     if order.network: text += f"Сеть: {order.network}\n"
     if order.user_payment_details: text += f"Реквизиты клиента: <code>{html.escape(order.user_payment_details)}</code>\n"
     if order.tx_hash:
-        text += f"\n🔗 <b>Хеш транзакции клиента:</b>\n<code>{html.escape(order.tx_hash)}</code>\n"
+        text += f"\n🔗 <b>Хеш транзакции клиента:</b>\n<code>{html.escape(str(order.tx_hash))}</code>\n"
         explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
         if explorer_url: text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
     
@@ -596,7 +596,7 @@ async def admin_approve_order(
             f"отправлены на ваши реквизиты: <code>{html.escape(order.user_payment_details or '')}</code>.\n\n"
         )
         if order.tx_hash:
-            user_text += f"🔗 Хеш вашей транзакции:\n<code>{html.escape(order.tx_hash)}</code>\n"
+            user_text += f"🔗 Хеш вашей транзакции:\n<code>{html.escape(str(order.tx_hash))}</code>\n"
             explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
             if explorer_url: user_text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n\n"
         user_text += "Спасибо за обмен!"
@@ -608,7 +608,7 @@ async def admin_approve_order(
 
         hash_text = ""
         if order.tx_hash:
-            hash_text = f"\n🔗 Хеш: <code>{html.escape(order.tx_hash)}</code>\n"
+            hash_text = f"\n🔗 Хеш: <code>{html.escape(str(order.tx_hash))}</code>\n"
             explorer_url = get_explorer_url(order.crypto_type, order.tx_hash)
             if explorer_url: hash_text += f"<a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
 
@@ -643,15 +643,18 @@ async def admin_approve_order(
                 await bot.send_message(order.user_id, f"🎉 Поздравляем! Вы совершили {total_ex} обменов.\nВам начислен <b>1 билет</b> на Колесо Фортуны! 🎰\nПроверьте его в главном меню.", parse_mode="HTML")
             except: pass
 
-        explorer_url = get_explorer_url(order.crypto_type, tx_hash)
+        # ЗАЩИТА ОТ None
+        tx_hash_str = str(tx_hash) if tx_hash else 'N/A'
+        explorer_url = get_explorer_url(order.crypto_type, tx_hash_str)
+        
         user_text = (
             f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>\n\n"
             f"Криптовалюта отправлена:\n"
             f"<b>{order.amount_crypto:.8f} {order.crypto_type}</b>\n"
             f"На адрес: <code>{html.escape(order.crypto_address)}</code>\n\n"
         )
-        if tx_hash != 'N/A':
-            user_text += f"📝 Хеш транзакции:\n<code>{html.escape(tx_hash)}</code>\n\n"
+        if tx_hash_str != 'N/A':
+            user_text += f"📝 Хеш транзакции:\n<code>{html.escape(tx_hash_str)}</code>\n\n"
             if explorer_url: user_text += f"🔗 <a href='{explorer_url}'>Посмотреть в эксплорере</a>\n\n"
         user_text += "Спасибо за использование нашего обменника! 🎉"
 
@@ -660,7 +663,7 @@ async def admin_approve_order(
             f"Заявка: #{order.public_order_number or order.id}\n"
             f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
             f"Кошелек: <code>{html.escape(order.crypto_address)}</code>\n"
-            f"TX Hash: <code>{html.escape(tx_hash)}</code>\n"
+            f"TX Hash: <code>{html.escape(tx_hash_str)}</code>\n"
         )
         try: await bot.send_message(order.user_id, user_text, parse_mode="HTML", disable_web_page_preview=True)
         except: pass
@@ -674,7 +677,7 @@ async def admin_approve_order(
             f"✅ <b>Заявка #{order.public_order_number or order.id} выполнена!</b>{mode_note}\n\n"
             f"💸 Криптовалюта отправлена:\n"
             f"   Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
-            f"   TX Hash: <code>{html.escape(tx_hash)}</code>\n"
+            f"   TX Hash: <code>{html.escape(tx_hash_str)}</code>\n"
         )
         if explorer_url: result_text += f"   <a href='{explorer_url}'>👀 Открыть в эксплорере</a>\n"
         result_text += f"   Комиссия: {order.amount_rub * order.fee_percent / 100:,.0f} ₽\n\nПользователь уведомлен."
