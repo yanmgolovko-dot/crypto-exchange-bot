@@ -21,23 +21,23 @@ from bot.config.settings import config
 
 logger = logging.getLogger(__name__)
 
-# Порог «пыли» (dust) для выходов BTC/LTC — ниже него создавать change-выход
-# не имеет смысла: сеть всё равно не примет его как экономически выгодный.
+# Порог «пыли» (dust) для выходов BTC/LTC
 _DUST_SAT = 546
 
-# Время жизни кэша баланса (минуты). В течение этого окна повторные запросы
-# к BlockCypher не выполняются — возвращается баланс из БД.
+# Время жизни кэша баланса (минуты)
 BALANCE_CACHE_TTL_MINUTES = 10
 
 
-# ==================== BitcoinService через BlockCypher ====================
+# ==================== BitcoinService через fallback API ====================
 class BitcoinServiceBlockCypher:
-    """Сервис для работы с Bitcoin через BlockCypher API (не требует Electrum)."""
+    """Сервис для работы с Bitcoin через несколько API (fallback)."""
 
-    API_URL = "https://api.blockcypher.com/v1/btc/main"
-    # Фиксированная комиссия сети для BTC: 7000 sat ≈ $0.8. Платит обменник,
-    # клиенту не показывается и в расчёте заявки не участвует.
-    FIXED_FEE_SAT = 7000
+    BLOCKCYPHER_API_URL = "https://api.blockcypher.com/v1/btc/main"
+    BLOCKSTREAM_API_URL = "https://blockstream.info/api"
+    MEMPOOL_API_URL = "https://mempool.space/api"
+    # Фиксированная комиссия сети для BTC: 0.00000800 BTC = 800 sat.
+    # Платит обменник, клиенту не показывается и в расчёте заявки не участвует.
+    FIXED_FEE_SAT = 800
 
     def __init__(self, api_token: str):
         self.api_token = api_token
@@ -52,31 +52,105 @@ class BitcoinServiceBlockCypher:
         if self.session and not self.session.closed:
             await self.session.close()
 
-    async def get_balance(self, address: str) -> float:
-        """Получить баланс адреса в BTC через BlockCypher."""
+    async def _get_balance_blockstream(self, address: str) -> Optional[float]:
+        """Blockstream Esplora API — баланс BTC."""
         try:
             session = await self._get_session()
-            url = f"{self.API_URL}/addrs/{address}/balance"
+            url = f"{self.BLOCKSTREAM_API_URL}/address/{address}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    chain = data.get("chain_stats", {})
+                    mempool = data.get("mempool_stats", {})
+                    chain_funded = chain.get("funded_txo_sum", 0)
+                    chain_spent = chain.get("spent_txo_sum", 0)
+                    mem_funded = mempool.get("funded_txo_sum", 0)
+                    mem_spent = mempool.get("spent_txo_sum", 0)
+                    balance_sat = (chain_funded - chain_spent) + (mem_funded - mem_spent)
+                    logger.info(f"Blockstream BTC баланс {address[:10]}...: {balance_sat} sat")
+                    return balance_sat / 1e8
+                else:
+                    logger.warning(f"Blockstream вернул {resp.status} для {address[:10]}...")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"Blockstream timeout для {address[:10]}...")
+            return None
+        except Exception as e:
+            logger.warning(f"Blockstream ошибка для {address[:10]}...: {e}")
+            return None
+
+    async def _get_balance_mempool(self, address: str) -> Optional[float]:
+        """mempool.space API — баланс BTC."""
+        try:
+            session = await self._get_session()
+            url = f"{self.MEMPOOL_API_URL}/address/{address}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    chain = data.get("chain_stats", {})
+                    mempool = data.get("mempool_stats", {})
+                    chain_funded = chain.get("funded_txo_sum", 0)
+                    chain_spent = chain.get("spent_txo_sum", 0)
+                    mem_funded = mempool.get("funded_txo_sum", 0)
+                    mem_spent = mempool.get("spent_txo_sum", 0)
+                    balance_sat = (chain_funded - chain_spent) + (mem_funded - mem_spent)
+                    logger.info(f"mempool.space BTC баланс {address[:10]}...: {balance_sat} sat")
+                    return balance_sat / 1e8
+                else:
+                    logger.warning(f"mempool.space вернул {resp.status} для {address[:10]}...")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"mempool.space timeout для {address[:10]}...")
+            return None
+        except Exception as e:
+            logger.warning(f"mempool.space ошибка для {address[:10]}...: {e}")
+            return None
+
+    async def _get_balance_blockcypher(self, address: str) -> Optional[float]:
+        """BlockCypher API — баланс BTC."""
+        try:
+            session = await self._get_session()
+            url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}/balance"
             params = {"token": self.api_token}
-            async with session.get(url, params=params) as resp:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     balance_sat = data.get("final_balance", 0)
                     if isinstance(balance_sat, str):
                         balance_sat = int(balance_sat)
+                    logger.info(f"BlockCypher BTC баланс {address[:10]}...: {balance_sat} sat")
                     return balance_sat / 1e8
                 else:
-                    logger.error(f"Ошибка BlockCypher: {resp.status}")
-                    return 0.0
+                    logger.warning(f"BlockCypher вернул {resp.status} для {address[:10]}...")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"BlockCypher timeout для {address[:10]}...")
+            return None
         except Exception as e:
-            logger.error(f"Ошибка получения баланса: {e}")
-            return 0.0
+            logger.warning(f"BlockCypher ошибка для {address[:10]}...: {e}")
+            return None
+
+    async def get_balance(self, address: str) -> float:
+        """Получить баланс BTC с fallback по провайдерам.
+
+        :raises RuntimeError: если все провайдеры недоступны
+        """
+        for provider_name, func in [
+            ("Blockstream", self._get_balance_blockstream),
+            ("mempool.space", self._get_balance_mempool),
+            ("BlockCypher", self._get_balance_blockcypher),
+        ]:
+            result = await func(address)
+            if result is not None:
+                return result
+        logger.error(f"Все провайдеры BTC недоступны для {address[:10]}...")
+        raise RuntimeError(f"All BTC balance providers failed for {address[:10]}...")
 
     async def get_utxo(self, address: str) -> List[Dict]:
-        """Получить UTXO для адреса через BlockCypher."""
+        """Получить UTXO для адреса через BlockCypher (для отправки)."""
         try:
             session = await self._get_session()
-            url = f"{self.API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
+            url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
             async with session.get(url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -145,40 +219,87 @@ class BitcoinServiceBlockCypher:
         return txid
 
 
-# ==================== LitecoinService через BlockCypher ====================
+# ==================== LitecoinService через fallback API ====================
 class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
-    """Сервис для работы с Litecoin через BlockCypher API."""
+    """Сервис для работы с Litecoin через несколько API (fallback)."""
 
-    API_URL = "https://api.blockcypher.com/v1/ltc/main"
-    # Фиксированная комиссия сети для LTC: 2000 sat ≈ $0.02. Платит обменник,
-    # клиенту не показывается и в расчёте заявки не участвует.
+    BLOCKCYPHER_API_URL = "https://api.blockcypher.com/v1/ltc/main"
+    LITECOINSPACE_API_URL = "https://litecoinspace.org/api"
+    BLOCKCHAIR_API_URL = "https://api.blockchair.com/litecoin/dashboards/address"
+    # Фиксированная комиссия сети для LTC: 2000 sat ≈ $0.02.
+    # Платит обменник, клиенту не показывается и в расчёте заявки не участвует.
     FIXED_FEE_SAT = 2000
 
-    async def get_balance(self, address: str) -> float:
-        """Получить баланс адреса в LTC через BlockCypher."""
+    async def _get_balance_litecoinspace(self, address: str) -> Optional[float]:
+        """litecoinspace.org — mempool-совместимый Esplora API для LTC."""
         try:
             session = await self._get_session()
-            url = f"{self.API_URL}/addrs/{address}/balance"
-            params = {"token": self.api_token}
-            async with session.get(url, params=params) as resp:
+            url = f"{self.LITECOINSPACE_API_URL}/address/{address}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    balance_sat = data.get("final_balance", 0)
-                    if isinstance(balance_sat, str):
-                        balance_sat = int(balance_sat)
+                    chain = data.get("chain_stats", {})
+                    mempool = data.get("mempool_stats", {})
+                    chain_funded = chain.get("funded_txo_sum", 0)
+                    chain_spent = chain.get("spent_txo_sum", 0)
+                    mem_funded = mempool.get("funded_txo_sum", 0)
+                    mem_spent = mempool.get("spent_txo_sum", 0)
+                    balance_sat = (chain_funded - chain_spent) + (mem_funded - mem_spent)
+                    logger.info(f"litecoinspace LTC баланс {address[:10]}...: {balance_sat} sat")
                     return balance_sat / 1e8
                 else:
-                    logger.error(f"Ошибка BlockCypher LTC: {resp.status}")
-                    return 0.0
+                    logger.warning(f"litecoinspace вернул {resp.status} для {address[:10]}...")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"litecoinspace timeout для {address[:10]}...")
+            return None
         except Exception as e:
-            logger.error(f"Ошибка получения баланса LTC: {e}")
-            return 0.0
+            logger.warning(f"litecoinspace ошибка для {address[:10]}...: {e}")
+            return None
 
-    async def get_utxo(self, address: str) -> List[Dict]:
-        """Получить UTXO для адреса LTC через BlockCypher."""
+    async def _get_balance_blockchair(self, address: str) -> Optional[float]:
+        """Blockchair LTC API — баланс в sat."""
         try:
             session = await self._get_session()
-            url = f"{self.API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
+            url = f"{self.BLOCKCHAIR_API_URL}/{address}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    addr_data = data.get("data", {}).get(address, {}).get("address", {})
+                    balance_sat = addr_data.get("balance", 0)
+                    logger.info(f"Blockchair LTC баланс {address[:10]}...: {balance_sat} sat")
+                    return balance_sat / 1e8
+                else:
+                    logger.warning(f"Blockchair вернул {resp.status} для {address[:10]}...")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"Blockchair timeout для {address[:10]}...")
+            return None
+        except Exception as e:
+            logger.warning(f"Blockchair ошибка для {address[:10]}...: {e}")
+            return None
+
+    async def get_balance(self, address: str) -> float:
+        """Получить баланс LTC с fallback по провайдерам.
+
+        :raises RuntimeError: если все провайдеры недоступны
+        """
+        for provider_name, func in [
+            ("litecoinspace", self._get_balance_litecoinspace),
+            ("Blockchair", self._get_balance_blockchair),
+            ("BlockCypher", self._get_balance_blockcypher),
+        ]:
+            result = await func(address)
+            if result is not None:
+                return result
+        logger.error(f"Все провайдеры LTC недоступны для {address[:10]}...")
+        raise RuntimeError(f"All LTC balance providers failed for {address[:10]}...")
+
+    async def get_utxo(self, address: str) -> List[Dict]:
+        """Получить UTXO для адреса LTC через BlockCypher (для отправки)."""
+        try:
+            session = await self._get_session()
+            url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
             async with session.get(url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -249,13 +370,12 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
 
 # ==================== CryptoWalletManager ====================
 class CryptoWalletManager:
-    """Главный менеджер, объединяющий работу с Bitcoin и Litecoin кошельками через BlockCypher."""
+    """Главный менеджер, объединяющий работу с Bitcoin и Litecoin кошельками."""
 
     def __init__(self):
         self.btc = BitcoinServiceBlockCypher(config.BLOCKCYPHER_TOKEN)
         self.ltc = LitecoinServiceBlockCypher(config.BLOCKCYPHER_TOKEN)
-        # Per-wallet locks, чтобы параллельные вызовы (меню + воркер)
-        # не делали два запроса к BlockCypher за один и тот же баланс.
+        # Per-wallet locks, чтобы параллельные вызовы не делали два запроса к API
         self._wallet_locks: Dict[int, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
 
@@ -291,10 +411,9 @@ class CryptoWalletManager:
     async def _fetch_and_cache_balance(self, wallet: Wallet, force: bool) -> Dict:
         """Возвращает баланс кошелька, используя кэш в БД при свежести last_balance_check.
 
-        При ошибке API last_balance_check НЕ обновляется — иначе «нулевой» баланс
-        закэшировался бы на TTL и админ видел бы ложные нули.
+        При ошибке всех провайдеров last_balance_check НЕ обновляется — иначе «нулевой»
+        баланс закэшировался бы на TTL и админ видел бы ложные нули.
         """
-        # Быстрый путь без lock: запись в БД свежая
         if not force and self._is_cache_fresh(wallet):
             logger.debug(
                 f"Баланс кошелька #{wallet.id} из кэша "
@@ -304,7 +423,6 @@ class CryptoWalletManager:
 
         lock = await self._get_wallet_lock(wallet.id)
         async with lock:
-            # Перечитываем из БД: возможно, другой корутин только что обновил баланс
             fresh_wallet = await db.get_wallet(wallet_id=wallet.id)
             if not fresh_wallet:
                 return {'success': False, 'error': 'Wallet not found'}
@@ -349,7 +467,7 @@ class CryptoWalletManager:
     async def update_balance(self, wallet_id: int, force: bool = False) -> Dict:
         """Обновить баланс кошелька.
 
-        :param force: если True — игнорировать кэш и всегда идти в BlockCypher.
+        :param force: если True — игнорировать кэш и всегда идти в API.
         """
         logger.info(f"Обновление баланса кошелька #{wallet_id} (force={force})")
         wallet = await db.get_wallet(wallet_id=wallet_id)
@@ -362,7 +480,7 @@ class CryptoWalletManager:
     ) -> Tuple[bool, float]:
         """Проверяет, хватает ли средств на кошельке с учётом фиксированной комиссии сети.
 
-        Использует тот же кэш, что и update_balance, чтобы не жечь лимит BlockCypher.
+        Использует тот же кэш, что и update_balance, чтобы не жечь лимиты API.
         """
         logger.info(f"Проверка наличия средств для {crypto_type}, необходимо {amount}")
         wallet = await db.get_wallet(crypto_type=crypto_type)
