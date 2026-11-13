@@ -132,44 +132,74 @@ class BitcoinServiceBlockCypher:
         raise RuntimeError(f"All BTC balance providers failed for {address[:10]}...")
 
     async def get_utxo(self, address: str) -> List[Dict]:
+        """Получить UTXO для адреса (сначала Blockstream, потом BlockCypher)."""
+        # 1. Пытаемся через Blockstream (самый надежный)
+        try:
+            session = await self._get_session()
+            url = f"{self.BLOCKSTREAM_API_URL}/address/{address}/utxo"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    utxos = [{
+                        "txid": tx["txid"],
+                        "vout": tx["vout"],
+                        "satoshis": tx["value"],
+                        "confirmations": 1 if tx.get("status", {}).get("confirmed", False) else 0
+                    } for tx in data]
+                    logger.info(f"Blockstream UTXO для {address[:10]}...: {len(utxos)} шт.")
+                    return utxos
+        except Exception as e:
+            logger.warning(f"Blockstream UTXO ошибка для {address[:10]}...: {e}")
+
+        # 2. Fallback на BlockCypher (с добавлением неподтвержденных)
         try:
             session = await self._get_session()
             url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
-            async with session.get(url) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     txrefs = data.get("txrefs", [])
-                    return [{
+                    unconfirmed = data.get("unconfirmed_txrefs", [])
+                    all_tx = txrefs + unconfirmed  # ВАЖНО: берем и неподтвержденные
+                    
+                    utxos = [{
                         "txid": tx["tx_hash"],
                         "vout": tx["tx_output_n"],
                         "satoshis": tx["value"],
                         "confirmations": tx.get("confirmations", 0)
-                    } for tx in txrefs]
-                logger.error(f"Ошибка получения UTXO: {resp.status}")
+                    } for tx in all_tx]
+                    logger.info(f"BlockCypher UTXO для {address[:10]}...: {len(utxos)} шт. (вкл. unconfirmed)")
+                    return utxos
+                logger.error(f"Ошибка получения UTXO BlockCypher: {resp.status}")
                 return []
         except Exception as e:
-            logger.error(f"Ошибка получения UTXO: {e}")
+            logger.error(f"Ошибка получения UTXO BlockCypher: {e}")
             return []
 
     async def send_transaction(self, from_privkey_wif: str, to_address: str,
-                               amount_ltc: float, fee_sat: int) -> str:
+                               amount_btc: float, fee_sat: int) -> str:
         if not BITCOINLIB_AVAILABLE:
             raise Exception("bitcoinlib не установлен")
         logger.info("=== send_transaction Bitcoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
-        logger.info(f"amount_ltc: {amount_ltc}")
-        key = Key(import_key=from_privkey_wif, network='litecoin')
+        logger.info(f"amount_btc: {amount_btc}")
+        
+        key = Key(import_key=from_privkey_wif, network='bitcoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
+        
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет UTXO")
+            
         logger.info(f"Найдено UTXO: {len(utxos)}")
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
-        amount_sat = int(round(amount_ltc * 1e8))
+            
+        amount_sat = int(round(amount_btc * 1e8))
         logger.info(f"Фиксированная комиссия сети (BTC): {fee_sat} satoshis")
-        t = Transaction(network='litecoin', fee=fee_sat)
+        
+        t = Transaction(network='bitcoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
             t.add_input(
@@ -179,12 +209,14 @@ class BitcoinServiceBlockCypher:
                 value=utxo["satoshis"],
             )
             total_input_sat += utxo["satoshis"]
+            
         change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
                 f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
+            
         t.add_output(address=to_address, value=amount_sat)
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
@@ -193,6 +225,7 @@ class BitcoinServiceBlockCypher:
             logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
+            
         txid = t.sign(keys=[key])
         logger.info(f"Транзакция подписана, txid: {txid}")
         return txid
@@ -263,23 +296,48 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         raise RuntimeError(f"All LTC balance providers failed for {address[:10]}...")
 
     async def get_utxo(self, address: str) -> List[Dict]:
+        """Получить UTXO для LTC (сначала litecoinspace, потом BlockCypher)."""
+        # 1. Пытаемся через litecoinspace
+        try:
+            session = await self._get_session()
+            url = f"{self.LITECOINSPACE_API_URL}/address/{address}/utxo"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    utxos = [{
+                        "txid": tx["txid"],
+                        "vout": tx["vout"],
+                        "satoshis": tx["value"],
+                        "confirmations": 1 if tx.get("status", {}).get("confirmed", False) else 0
+                    } for tx in data]
+                    logger.info(f"litecoinspace UTXO для {address[:10]}...: {len(utxos)} шт.")
+                    return utxos
+        except Exception as e:
+            logger.warning(f"litecoinspace UTXO ошибка для {address[:10]}...: {e}")
+
+        # 2. Fallback на BlockCypher
         try:
             session = await self._get_session()
             url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
-            async with session.get(url) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     txrefs = data.get("txrefs", [])
-                    return [{
+                    unconfirmed = data.get("unconfirmed_txrefs", [])
+                    all_tx = txrefs + unconfirmed
+                    
+                    utxos = [{
                         "txid": tx["tx_hash"],
                         "vout": tx["tx_output_n"],
                         "satoshis": tx["value"],
                         "confirmations": tx.get("confirmations", 0)
-                    } for tx in txrefs]
-                logger.error(f"Ошибка получения UTXO LTC: {resp.status}")
+                    } for tx in all_tx]
+                    logger.info(f"BlockCypher UTXO для {address[:10]}...: {len(utxos)} шт. (вкл. unconfirmed)")
+                    return utxos
+                logger.error(f"Ошибка получения UTXO LTC BlockCypher: {resp.status}")
                 return []
         except Exception as e:
-            logger.error(f"Ошибка получения UTXO LTC: {e}")
+            logger.error(f"Ошибка получения UTXO LTC BlockCypher: {e}")
             return []
 
     async def send_transaction(self, from_privkey_wif: str, to_address: str,
@@ -289,17 +347,22 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         logger.info("=== send_transaction Litecoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
         logger.info(f"amount_ltc: {amount_ltc}")
+        
         key = Key(import_key=from_privkey_wif, network='litecoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
+        
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет UTXO")
+            
         logger.info(f"Найдено UTXO: {len(utxos)}")
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
+            
         amount_sat = int(round(amount_ltc * 1e8))
         logger.info(f"Фиксированная комиссия сети (LTC): {fee_sat} satoshis")
+        
         t = Transaction(network='litecoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
@@ -310,12 +373,14 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
                 value=utxo["satoshis"],
             )
             total_input_sat += utxo["satoshis"]
+            
         change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
                 f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
+            
         t.add_output(address=to_address, value=amount_sat)
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
@@ -324,6 +389,7 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
             logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
+            
         txid = t.sign(keys=[key])
         logger.info(f"Транзакция подписана, txid: {txid}")
         return txid
@@ -371,11 +437,7 @@ class CryptoWalletManager:
 
     @staticmethod
     def _is_cache_fresh(wallet: Wallet) -> bool:
-        """Проверяет, что last_balance_check не старше BALANCE_CACHE_TTL_MINUTES.
-
-        last_balance_check может прийти как str или как datetime (если aiosqlite
-        настроен с detect_types=PARSE_DECLTYPES). Обрабатываем оба варианта. UTC.
-        """
+        """Проверяет, что last_balance_check не старше BALANCE_CACHE_TTL_MINUTES."""
         if not wallet.last_balance_check:
             return False
 
