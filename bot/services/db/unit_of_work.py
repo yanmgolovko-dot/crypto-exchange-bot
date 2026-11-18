@@ -16,6 +16,7 @@ from bot.services.db.coupon_repository import CouponRepository
 from bot.services.db.activity_award_repository import ActivityAwardRepository
 from bot.services.db.ticket_repository import TicketRepository
 from bot.services.db.review_repository import ReviewRepository
+from bot.services.db.partner_repository import PartnerRepository
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class UnitOfWork:
         self.activity_awards = ActivityAwardRepository(connection)
         self.tickets = TicketRepository(connection)
         self.reviews = ReviewRepository(connection)
+        self.partners = PartnerRepository(connection)
         logger.debug("UnitOfWork инициализирован")
 
     async def __aenter__(self):

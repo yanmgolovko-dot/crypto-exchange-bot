@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from bot.services.db import Database
 from bot.services.crypto_wallets import CryptoWalletManager
@@ -25,7 +26,6 @@ class AdminOrderService:
 
     async def _write_financial_records(self, uow, order, admin_id: int):
         """Пишет две записи: income (маржа) + expense (сетевая).
-
         Согласно варианту A: exchange_fee = commission_rub (чистая маржа),
         network_fee_expense = network_fee_rub (компенсация сетевой).
         """
@@ -51,6 +51,80 @@ class AdminOrderService:
                 created_by=admin_id
             )
 
+    def _get_tx_url(self, crypto_type: str, tx_hash: str) -> str:
+        """Возвращает ссылку на транзакцию в блок-эксплорере."""
+        crypto = crypto_type.upper()
+        if crypto == 'BTC':
+            return f"https://blockstream.info/tx/{tx_hash}"
+        elif crypto == 'LTC':
+            return f"https://blockchair.com/litecoin/transaction/{tx_hash}"
+        # fallback для других монет (можно расширить)
+        return f"https://blockchair.com/search?q={tx_hash}"
+
+    async def _notify_user_about_completion(self, bot: Bot, order, tx_hash: str):
+        """Отправляет клиенту сообщение о завершении заявки с хешем и ссылкой."""
+        if not tx_hash or tx_hash == 'N/A':
+            logger.warning(f"Не удалось отправить уведомление клиенту: tx_hash отсутствует для заявки #{order.id}")
+            return
+
+        tx_url = self._get_tx_url(order.crypto_type, tx_hash)
+        text = (
+            f"✅ Заявка #{order.id} выполнена!\n\n"
+            f"Сумма: {order.amount_crypto:.8f} {order.crypto_type}\n"
+            f"Хеш транзакции: `{tx_hash}`\n"
+            f"[Посмотреть в блок-эксплорере]({tx_url})"
+        )
+
+        try:
+            await bot.send_message(
+                chat_id=order.user_id,
+                text=text,
+                parse_mode="Markdown",
+                disable_web_page_preview=False
+            )
+            logger.info(f"Уведомление о завершении заявки #{order.id} отправлено пользователю {order.user_id}")
+        except TelegramForbiddenError:
+            logger.warning(
+                f"Не удалось отправить уведомление пользователю {order.user_id} "
+                f"по заявке #{order.id}: бот заблокирован пользователем"
+            )
+        except TelegramBadRequest as e:
+            logger.warning(
+                f"Не удалось отправить уведомление пользователю {order.user_id} "
+                f"по заявке #{order.id}: {e}"
+            )
+        except Exception as e:
+            logger.exception(
+                f"Неожиданная ошибка при отправке уведомления пользователю {order.user_id} "
+                f"по заявке #{order.id}: {e}"
+            )
+
+    async def _run_post_completion_hooks(self, order, admin_id: int) -> None:
+        """
+        Пост-обработка после завершения заявки.
+
+        Все шаги независимы: падение одного не должно блокировать остальные.
+        Инцидент #43 (18.11.2026): AttributeError: 'UnitOfWork' object has no attribute 'partners'
+        в partner_service.process_order_reward срывал уведомление клиенту и запрос отзыва.
+        """
+        try:
+            await coupon_service.check_and_give_activity_coupons(order.user_id)
+        except Exception:
+            logger.exception(
+                "[ADMIN %s] coupon_service.check_and_give_activity_coupons "
+                "failed for order #%s",
+                admin_id, order.id,
+            )
+
+        try:
+            await partner_service.process_order_reward(order)
+        except Exception:
+            logger.exception(
+                "[ADMIN %s] partner_service.process_order_reward "
+                "failed for order #%s — продолжаем",
+                admin_id, order.id,
+            )
+
     async def approve_order_auto(
         self,
         order_id: int,
@@ -62,7 +136,6 @@ class AdminOrderService:
         Комиссия сети фиксированная (из настроек), проверка загрузки сети не выполняется.
         """
         logger.info(f"[ADMIN {admin_id}] Автоматическое подтверждение заявки #{order_id}")
-
         order = await self.db.get_order(order_id)
         if not order:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
@@ -73,18 +146,22 @@ class AdminOrderService:
             return {'success': False, 'error': f'Заявка не в статусе "оплачена". Текущий статус: {order.status}'}
 
         async with self.db.uow() as uow:
-            cursor = await uow._connection.conn.execute("""
+            cursor = await uow._connection.conn.execute(
+                """
                 UPDATE exchange_orders
                 SET status = 'processing'
                 WHERE id = ? AND status = 'paid'
                 RETURNING id
-            """, (order_id,))
+                """,
+                (order_id,)
+            )
             row = await cursor.fetchone()
             if not row:
                 await uow.rollback()
                 logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} уже обрабатывается")
                 return {'success': False, 'error': 'Заявка уже обрабатывается или была изменена'}
             await uow.commit()
+
         logger.debug(f"[ADMIN {admin_id}] Заявка #{order_id} заблокирована (статус processing)")
 
         wallets = await self.db.get_all_wallets(crypto_type=order.crypto_type, include_inactive=False)
@@ -125,13 +202,11 @@ class AdminOrderService:
             amount=order.amount_crypto,
             wallet=selected_wallet
         )
-
         if not tx_result['success']:
             logger.error(f"[ADMIN {admin_id}] Ошибка отправки транзакции по заявке #{order_id}: {tx_result.get('error')}")
             await self.db.update_order_status(order_id, 'paid', f'Ошибка отправки: {tx_result.get("error")}')
             return {'success': False, 'error': tx_result.get('error', 'Неизвестная ошибка')}
 
-        # Защита от None
         tx_hash = tx_result.get('tx_hash') or 'N/A'
         logger.info(f"[ADMIN {admin_id}] Транзакция отправлена, tx_hash={tx_hash}")
 
@@ -144,10 +219,14 @@ class AdminOrderService:
             )
             await self._write_financial_records(uow, order, admin_id)
             await uow.commit()
+
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, финансовые записи созданы")
 
-        await coupon_service.check_and_give_activity_coupons(order.user_id)
-        await partner_service.process_order_reward(order)
+        # 🔔 Уведомление клиенту с хешем и ссылкой — до пост-обработки.
+        await self._notify_user_about_completion(bot, order, tx_hash)
+
+        # 🔗 Пост-обработка: купоны и партнёрское вознаграждение (каждый шаг в try/except).
+        await self._run_post_completion_hooks(order, admin_id)
 
         return {
             'success': True,
@@ -169,12 +248,14 @@ class AdminOrderService:
             return False
 
         ok = await self.db.orders.update_order_status(
-            order_id, 'processing', expected_status='paid'
+            order_id,
+            'processing',
+            expected_status='paid'
         )
         if not ok:
             logger.warning(
                 f"[ADMIN {admin_id}] Не удалось перевести заявку #{order_id} в processing "
-                f"(статус изменился параллельно)"
+                f"(статус не изменился)"
             )
             return False
 
@@ -189,12 +270,10 @@ class AdminOrderService:
         bot: Bot
     ) -> Tuple[bool, str]:
         logger.info(f"[ADMIN {admin_id}] Завершение заявки #{order_id} с хешем {tx_hash}")
-
         order = await self.db.get_order(order_id)
         if not order:
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} не найдена")
             return False, "Заявка не найдена"
-
         if order.status == 'completed':
             logger.warning(f"[ADMIN {admin_id}] Заявка #{order_id} уже завершена")
             return False, "Заявка уже завершена"
@@ -216,10 +295,11 @@ class AdminOrderService:
             )
             await self._write_financial_records(uow, order, admin_id)
             await uow.commit()
+
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, финансовые записи созданы")
 
-        await coupon_service.check_and_give_activity_coupons(order.user_id)
-        await partner_service.process_order_reward(order)
+        await self._notify_user_about_completion(bot, order, tx_hash)
+        await self._run_post_completion_hooks(order, admin_id)
 
         return True, ""
 

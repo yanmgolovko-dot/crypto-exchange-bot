@@ -104,12 +104,22 @@ class ErrorNotifier:
             parts.append(f"<b>Действие:</b> <code>{_sanitize(action)}</code>")
         parts.append(f"<b>Update:</b> <code>{update.update_id}</code>")
         parts.append("")
+
+        # Резервируем место под заголовок traceback, обёртку <pre></pre> и суффикс.
+        # Обрезаем tb_text ДО вставки в разметку, чтобы никогда не разрезать
+        # закрывающий тег </pre> — иначе Telegram вернёт:
+        # "Bad Request: can't parse entities: Can't find end tag ... 'pre'"
+        # (см. инцидент #43 от 18.11.2026).
+        prefix_len = len("\n".join(parts)) + len("\n<b>Traceback:</b>\n<pre></pre>")
+        suffix_note = "\n... (обрезано)"
+        budget = self.max_len - prefix_len - len(suffix_note)
+        if budget < 200:
+            budget = 200
+        if len(tb_text) > budget:
+            tb_text = tb_text[:budget] + suffix_note
         parts.append(f"<b>Traceback:</b>\n<pre>{tb_text}</pre>")
 
-        msg = "\n".join(parts)
-        if len(msg) > self.max_len:
-            msg = msg[: self.max_len] + "\n... (обрезано)"
-        return msg
+        return "\n".join(parts)
 
     async def notify(self, bot: Bot, event: ErrorEvent) -> None:
         if not self._admin_ids:
