@@ -61,6 +61,39 @@ class AdminOrderService:
         # fallback для других монет (можно расширить)
         return f"https://blockchair.com/search?q={tx_hash}"
 
+    async def _persist_tx_hash(self, order_id: int, tx_hash: str, admin_id: int) -> None:
+        """
+        Сохраняет tx_hash в колонку exchange_orders.tx_hash (best-effort).
+
+        Раньше tx_hash попадал только в admin_comment, а колонка tx_hash
+        оставалась NULL — из-за этого в админке и выгрузках хеш отсутствовал
+        (инцидент по заявке #43 от 18.11.2026).
+
+        Метод не должен срывать уведомление клиенту и пост-обработку:
+        любые ошибки логируются и проглатываются.
+        """
+        if not tx_hash or tx_hash == 'N/A':
+            return
+        try:
+            ok, err = await self.db.orders.update_order_tx_hash_checked(
+                order_id, tx_hash, admin_id
+            )
+            if not ok:
+                logger.warning(
+                    "[ADMIN %s] Не удалось сохранить tx_hash для заявки #%s: %s",
+                    admin_id, order_id, err,
+                )
+            else:
+                logger.info(
+                    "[ADMIN %s] tx_hash сохранён в БД для заявки #%s",
+                    admin_id, order_id,
+                )
+        except Exception:
+            logger.exception(
+                "[ADMIN %s] Ошибка сохранения tx_hash для заявки #%s — продолжаем",
+                admin_id, order_id,
+            )
+
     async def _notify_user_about_completion(self, bot: Bot, order, tx_hash: str):
         """Отправляет клиенту сообщение о завершении заявки с хешем и ссылкой."""
         if not tx_hash or tx_hash == 'N/A':
@@ -222,10 +255,13 @@ class AdminOrderService:
 
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, финансовые записи созданы")
 
+        # 🔗 Сохраняем tx_hash в колонку exchange_orders.tx_hash (best-effort).
+        await self._persist_tx_hash(order_id, tx_hash, admin_id)
+
         # 🔔 Уведомление клиенту с хешем и ссылкой — до пост-обработки.
         await self._notify_user_about_completion(bot, order, tx_hash)
 
-        # 🔗 Пост-обработка: купоны и партнёрское вознаграждение (каждый шаг в try/except).
+        # 🎁 Пост-обработка: купоны и партнёрское вознаграждение (каждый шаг в try/except).
         await self._run_post_completion_hooks(order, admin_id)
 
         return {
