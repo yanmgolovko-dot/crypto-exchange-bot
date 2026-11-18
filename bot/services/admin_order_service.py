@@ -58,19 +58,17 @@ class AdminOrderService:
             return f"https://blockstream.info/tx/{tx_hash}"
         elif crypto == 'LTC':
             return f"https://blockchair.com/litecoin/transaction/{tx_hash}"
-        # fallback для других монет (можно расширить)
         return f"https://blockchair.com/search?q={tx_hash}"
 
     async def _persist_tx_hash(self, order_id: int, tx_hash: str, admin_id: int) -> None:
         """
         Сохраняет tx_hash в колонку exchange_orders.tx_hash (best-effort).
 
-        Раньше tx_hash попадал только в admin_comment, а колонка tx_hash
-        оставалась NULL — из-за этого в админке и выгрузках хеш отсутствовал
-        (инцидент по заявке #43 от 18.11.2026).
+        ВАЖНО: вызывать ТОЛЬКО пока заявка в статусе pending/processing —
+        update_order_tx_hash_checked запрещает запись в completed/cancelled.
+        Для auto-approve это значит: до блока, который ставит 'completed'.
 
-        Метод не должен срывать уведомление клиенту и пост-обработку:
-        любые ошибки логируются и проглатываются.
+        Любые ошибки логируются и проглатываются, чтобы не срывать уведомление клиенту.
         """
         if not tx_hash or tx_hash == 'N/A':
             return
@@ -243,6 +241,11 @@ class AdminOrderService:
         tx_hash = tx_result.get('tx_hash') or 'N/A'
         logger.info(f"[ADMIN {admin_id}] Транзакция отправлена, tx_hash={tx_hash}")
 
+        # 🔗 Сохраняем tx_hash в БД, ПОКА заявка в статусе 'processing'
+        # (update_order_tx_hash_checked разрешает запись только в pending/processing).
+        await self._persist_tx_hash(order_id, tx_hash, admin_id)
+
+        # Теперь переводим в completed и пишем финансы.
         async with self.db.uow() as uow:
             await uow.orders.update_order_status(
                 order_id,
@@ -254,9 +257,6 @@ class AdminOrderService:
             await uow.commit()
 
         logger.info(f"[ADMIN {admin_id}] Заявка #{order_id} завершена, финансовые записи созданы")
-
-        # 🔗 Сохраняем tx_hash в колонку exchange_orders.tx_hash (best-effort).
-        await self._persist_tx_hash(order_id, tx_hash, admin_id)
 
         # 🔔 Уведомление клиенту с хешем и ссылкой — до пост-обработки.
         await self._notify_user_about_completion(bot, order, tx_hash)
