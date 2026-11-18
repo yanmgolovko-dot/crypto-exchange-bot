@@ -3,18 +3,27 @@
 
 import math
 import logging
+from decimal import Decimal, ROUND_CEILING
 from typing import Optional, Dict, Any
 
 from bot.services.db import Database
-from bot.services.crypto_api import crypto_api
 
 logger = logging.getLogger(__name__)
 
 
+def _ceil_crypto(value: float) -> float:
+    """Округление количества крипты ВВЕРХ до 1e-8 (satoshi/litoshi).
+
+    Гарантирует, что пользователь не получит меньше запрошенного
+    из-за потерь на округлении float или banker's rounding.
+    """
+    return float(
+        Decimal(str(value)).quantize(Decimal('0.00000001'), rounding=ROUND_CEILING)
+    )
+
+
 class OrderService:
-    """
-    Сервис для расчёта и создания заявок.
-    """
+    """Сервис для расчёта и создания заявок."""
 
     MIN_FEE_USD = {
         'BTC': 9.0,
@@ -49,7 +58,10 @@ class OrderService:
         rate: Optional[float] = None,
         coupon_data: Optional[Dict] = None
     ) -> Optional[Dict[str, Any]]:
-        logger.info(f"Расчёт заявки: {crypto_type}, {input_type}, amount={amount}, discount={discount_percent}%, coupon={coupon_data}")
+        logger.info(
+            f"Расчёт заявки: {crypto_type}, {input_type}, "
+            f"amount={amount}, discount={discount_percent}%, coupon={coupon_data}"
+        )
 
         if not rate:
             if crypto_type == "BTC":
@@ -77,8 +89,7 @@ class OrderService:
         if input_type == 'rub':
             net_amount_initial = amount
         elif input_type == 'crypto':
-            desired_crypto = amount
-            net_amount_initial = desired_crypto * rate
+            net_amount_initial = amount * rate
         else:
             logger.error(f"Неизвестный input_type: {input_type}")
             return None
@@ -107,7 +118,10 @@ class OrderService:
             logger.debug(f"После купона на комиссию: target_fee_usd = {target_fee_usd:.2f}")
 
         target_fee_rub = target_fee_usd * usd_rub
-        logger.debug(f"Комиссия по проценту: {fee_usd_percent:.2f} USD, финальная: {target_fee_usd:.2f} USD, в рублях: {target_fee_rub:.2f}")
+        logger.debug(
+            f"Комиссия по проценту: {fee_usd_percent:.2f} USD, "
+            f"финальная: {target_fee_usd:.2f} USD, в рублях: {target_fee_rub:.2f}"
+        )
 
         # Скрытая сетевая комиссия: закладывается в gross_amount, клиент её не видит
         # отдельной строкой, но платит. Платит её обменник из gross_amount в сеть.
@@ -122,7 +136,17 @@ class OrderService:
         # gross = net_amount (клиенту) + маржа обменника + сетевая (скрыто)
         gross_raw = net_amount + target_fee_rub + network_fee_rub
         gross_rounded = math.ceil(gross_raw / 100) * 100
-        amount_crypto = net_amount / rate
+
+        # КРИТИЧНО: пользователь должен получить РОВНО введённую крипту (или больше),
+        # но никогда меньше из-за округлений gross_amount / amount_crypto.
+        if input_type == 'crypto':
+            amount_crypto = _ceil_crypto(amount)
+        else:
+            amount_crypto = _ceil_crypto(net_amount / rate)
+        logger.debug(
+            f"amount_crypto: input_type={input_type}, amount={amount}, "
+            f"net_amount={net_amount:.4f}, rate={rate:.2f} → {amount_crypto:.8f}"
+        )
 
         total_markup = gross_rounded - net_amount
         total_markup_percent = (total_markup / net_amount) * 100 if net_amount > 0 else 0
@@ -130,7 +154,7 @@ class OrderService:
         result = {
             'net_amount': net_amount,
             'gross_amount': gross_rounded,
-            'amount_crypto': round(amount_crypto, 8),
+            'amount_crypto': amount_crypto,
             'crypto_type': crypto_type,
             'rate': round(rate, 2),
             'fee_percent': round(total_markup_percent, 2),
@@ -167,7 +191,10 @@ class OrderService:
         network_fee_rub: float = 0,
         network_fee_crypto: float = 0
     ) -> int:
-        logger.info(f"Создание заявки ({order_type}) для пользователя {user_id}, {crypto_type}, сумма {amount_rub} ₽")
+        logger.info(
+            f"Создание заявки ({order_type}) для пользователя {user_id}, "
+            f"{crypto_type}, сумма {amount_rub} ₽"
+        )
 
         if not coupon_id:
             coupon_id = None

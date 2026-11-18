@@ -4,6 +4,7 @@ import asyncio
 import aiohttp
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_CEILING
 from typing import Optional, Dict, List, Tuple
 
 try:
@@ -27,6 +28,18 @@ BALANCE_CACHE_TTL_MINUTES = 10
 NETWORK_FEE_CACHE_TTL_SECONDS = 60
 
 _DEFAULT_NETWORK_FEE_SAT = {'BTC': 800, 'LTC': 2000}
+
+
+def _crypto_to_sat_ceil(amount: float) -> int:
+    """Перевод крипты в satoshi с округлением ВВЕРХ.
+
+    Гарантирует, что клиенту на выходе уйдёт НЕ МЕНЬШЕ amount * 1e8,
+    даже если float в БД даёт 0.00399999 вместо 0.004.
+    """
+    return int(
+        (Decimal(str(amount)) * Decimal('100000000'))
+        .quantize(Decimal('1'), rounding=ROUND_CEILING)
+    )
 
 
 class BitcoinServiceBlockCypher:
@@ -134,7 +147,6 @@ class BitcoinServiceBlockCypher:
 
     async def get_utxo(self, address: str) -> List[Dict]:
         """Получить UTXO для адреса (сначала Blockstream, потом BlockCypher)."""
-        # 1. Пытаемся через Blockstream (самый надежный)
         try:
             session = await self._get_session()
             url = f"{self.BLOCKSTREAM_API_URL}/address/{address}/utxo"
@@ -152,7 +164,6 @@ class BitcoinServiceBlockCypher:
         except Exception as e:
             logger.warning(f"Blockstream UTXO ошибка для {address[:10]}...: {e}")
 
-        # 2. Fallback на BlockCypher (с добавлением неподтвержденных)
         try:
             session = await self._get_session()
             url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
@@ -161,8 +172,7 @@ class BitcoinServiceBlockCypher:
                     data = await resp.json()
                     txrefs = data.get("txrefs", [])
                     unconfirmed = data.get("unconfirmed_txrefs", [])
-                    all_tx = txrefs + unconfirmed  # ВАЖНО: берем и неподтвержденные
-                    
+                    all_tx = txrefs + unconfirmed
                     utxos = [{
                         "txid": tx["tx_hash"],
                         "vout": tx["tx_output_n"],
@@ -184,22 +194,26 @@ class BitcoinServiceBlockCypher:
         logger.info("=== send_transaction Bitcoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
         logger.info(f"amount_btc: {amount_btc}")
-        
+
         key = Key(import_key=from_privkey_wif, network='bitcoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
-        
+
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет UTXO")
-            
+
         logger.info(f"Найдено UTXO: {len(utxos)}")
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
-            
-        amount_sat = int(round(amount_btc * 1e8))
+
+        amount_sat = _crypto_to_sat_ceil(amount_btc)
+        logger.info(
+            f"Клиенту на выход: {amount_sat} sat = {amount_sat / 1e8:.8f} BTC "
+            f"(введено: {amount_btc})"
+        )
         logger.info(f"Фиксированная комиссия сети (BTC): {fee_sat} satoshis")
-        
+
         t = Transaction(network='bitcoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
@@ -210,14 +224,14 @@ class BitcoinServiceBlockCypher:
                 value=utxo["satoshis"],
             )
             total_input_sat += utxo["satoshis"]
-            
+
         change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
                 f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
-            
+
         t.add_output(address=to_address, value=amount_sat)
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
@@ -226,30 +240,25 @@ class BitcoinServiceBlockCypher:
             logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
-            
-        # 1. Подписываем транзакцию
+
         t.sign(keys=[key])
-        
-        # 2. Получаем сырой хекс транзакции
         raw_hex = t.raw_hex()
         logger.info(f"Транзакция подписана, raw_hex: {raw_hex[:64]}...")
-        
-        # 3. Отправляем в сеть (broadcast)
+
         service = Service(network='bitcoin')
         res = service.sendrawtransaction(raw_hex)
-        
+
         if not res:
             raise Exception("Ошибка библиотеки: сервис вернул пустой ответ при отправке")
-            
-        # ИЗВЛЕКАЕМ ХЕШ ИЗ СЛОВАРЯ (если вернулся словарь)
+
         if isinstance(res, dict):
             txid = res.get('txid')
         else:
             txid = str(res)
-            
+
         if not txid:
             raise Exception("Ошибка библиотеки: не удалось извлечь txid из ответа")
-            
+
         logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
         return str(txid).strip()
 
@@ -320,7 +329,6 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
 
     async def get_utxo(self, address: str) -> List[Dict]:
         """Получить UTXO для LTC (сначала litecoinspace, потом BlockCypher)."""
-        # 1. Пытаемся через litecoinspace
         try:
             session = await self._get_session()
             url = f"{self.LITECOINSPACE_API_URL}/address/{address}/utxo"
@@ -338,7 +346,6 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         except Exception as e:
             logger.warning(f"litecoinspace UTXO ошибка для {address[:10]}...: {e}")
 
-        # 2. Fallback на BlockCypher
         try:
             session = await self._get_session()
             url = f"{self.BLOCKCYPHER_API_URL}/addrs/{address}?unspentOnly=true&token={self.api_token}"
@@ -348,7 +355,6 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
                     txrefs = data.get("txrefs", [])
                     unconfirmed = data.get("unconfirmed_txrefs", [])
                     all_tx = txrefs + unconfirmed
-                    
                     utxos = [{
                         "txid": tx["tx_hash"],
                         "vout": tx["tx_output_n"],
@@ -370,22 +376,26 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
         logger.info("=== send_transaction Litecoin BlockCypher START ===")
         logger.info(f"to_address: {to_address}")
         logger.info(f"amount_ltc: {amount_ltc}")
-        
+
         key = Key(import_key=from_privkey_wif, network='litecoin')
         from_address = key.address()
         logger.info(f"from_address: {from_address}")
-        
+
         utxos = await self.get_utxo(from_address)
         if not utxos:
             raise Exception("Нет UTXO")
-            
+
         logger.info(f"Найдено UTXO: {len(utxos)}")
         for utxo in utxos:
             logger.info(f"UTXO: {utxo['txid']}:{utxo['vout']} = {utxo['satoshis']} satoshis")
-            
-        amount_sat = int(round(amount_ltc * 1e8))
+
+        amount_sat = _crypto_to_sat_ceil(amount_ltc)
+        logger.info(
+            f"Клиенту на выход: {amount_sat} sat = {amount_sat / 1e8:.8f} LTC "
+            f"(введено: {amount_ltc})"
+        )
         logger.info(f"Фиксированная комиссия сети (LTC): {fee_sat} satoshis")
-        
+
         t = Transaction(network='litecoin', fee=fee_sat)
         total_input_sat = 0
         for utxo in utxos:
@@ -396,14 +406,14 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
                 value=utxo["satoshis"],
             )
             total_input_sat += utxo["satoshis"]
-            
+
         change_sat = total_input_sat - amount_sat - fee_sat
         if change_sat < 0:
             raise Exception(
                 f"Недостаточно средств на кошельке: требуется "
                 f"{amount_sat + fee_sat} sat, доступно {total_input_sat} sat"
             )
-            
+
         t.add_output(address=to_address, value=amount_sat)
         if change_sat > _DUST_SAT:
             t.add_output(address=from_address, value=change_sat)
@@ -412,30 +422,25 @@ class LitecoinServiceBlockCypher(BitcoinServiceBlockCypher):
             logger.info(f"Сдача {change_sat} sat ≤ dust-порога уходит в комиссию")
         else:
             logger.info("Сдача = 0, UTXO израсходованы полностью")
-            
-        # 1. Подписываем транзакцию
+
         t.sign(keys=[key])
-        
-        # 2. Получаем сырой хекс транзакции
         raw_hex = t.raw_hex()
         logger.info(f"Транзакция подписана, raw_hex: {raw_hex[:64]}...")
-        
-        # 3. Отправляем в сеть (broadcast)
+
         service = Service(network='litecoin')
         res = service.sendrawtransaction(raw_hex)
-        
+
         if not res:
             raise Exception("Ошибка библиотеки: сервис вернул пустой ответ при отправке")
-            
-        # ИЗВЛЕКАЕМ ХЕШ ИЗ СЛОВАРЯ (если вернулся словарь)
+
         if isinstance(res, dict):
             txid = res.get('txid')
         else:
             txid = str(res)
-            
+
         if not txid:
             raise Exception("Ошибка библиотеки: не удалось извлечь txid из ответа")
-            
+
         logger.info(f"Транзакция успешно отправлена в сеть, txid: {txid}")
         return str(txid).strip()
 

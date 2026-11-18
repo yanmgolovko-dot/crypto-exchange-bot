@@ -1,17 +1,13 @@
 # bot/admin/tickets.py
-"""Админ-панель для управления тикетами с возможностью запроса файлов."""
-
+"""Админ-панель для управления тикетами с возможностью просмотра и запроса файлов."""
 import logging
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-from bot.services.db import db
 from bot.services.ticket_service import ticket_service
-from bot.admin.main import is_admin, notify_admins
-from bot.config.settings import config
+from bot.admin.main import is_admin
 from bot.utils.helpers import safe_edit_message, escape_html
 
 logger = logging.getLogger(__name__)
@@ -19,30 +15,29 @@ router = Router()
 
 
 class AdminTicketStates(StatesGroup):
-    replying_to_ticket = State()      # ответ администратора
-    requesting_file = State()          # запрос файла у пользователя (ожидание сообщения с запросом)
+    replying_to_ticket = State()
+    requesting_file = State()
 
 
 def admin_tickets_keyboard(tickets: list, page: int = 0, per_page: int = 5):
     kb = InlineKeyboardBuilder()
     start = page * per_page
-    for ticket in tickets[start:start+per_page]:
+    for ticket in tickets[start:start + per_page]:
         status_emoji = "🟢" if ticket.status == 'open' else "🔴"
         kb.button(
             text=f"{status_emoji} #{ticket.id} {ticket.subject or 'Без темы'}",
             callback_data=f"admin_ticket_view_{ticket.id}"
         )
     if page > 0:
-        kb.button(text="◀️ Назад", callback_data=f"admin_tickets_page_{page-1}")
+        kb.button(text="◀️ Назад", callback_data=f"admin_tickets_page_{page - 1}")
     if start + per_page < len(tickets):
-        kb.button(text="Вперёд ▶️", callback_data=f"admin_tickets_page_{page+1}")
+        kb.button(text="Вперёд ▶️", callback_data=f"admin_tickets_page_{page + 1}")
     kb.button(text="🔙 В админку", callback_data="admin_back_main")
     kb.adjust(1)
     return kb.as_markup()
 
 
 def admin_ticket_control_keyboard(ticket_id: int) -> InlineKeyboardBuilder:
-    """Клавиатура для управления тикетом (админ)."""
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Ответить", callback_data=f"admin_ticket_reply_{ticket_id}")
     kb.button(text="📎 Запросить файл", callback_data=f"admin_ticket_request_file_{ticket_id}")
@@ -52,7 +47,6 @@ def admin_ticket_control_keyboard(ticket_id: int) -> InlineKeyboardBuilder:
     return kb.as_markup()
 
 
-# Главное меню тикетов для админа
 @router.callback_query(F.data == "admin_tickets_menu")
 async def admin_tickets_menu(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -67,7 +61,6 @@ async def admin_tickets_menu(callback: CallbackQuery):
     await callback.answer()
 
 
-# Пагинация
 @router.callback_query(F.data.startswith("admin_tickets_page_"))
 async def admin_tickets_page(callback: CallbackQuery):
     page = int(callback.data.split("_")[3])
@@ -83,7 +76,6 @@ async def admin_tickets_page(callback: CallbackQuery):
     await callback.answer()
 
 
-# Просмотр конкретного тикета (админ)
 @router.callback_query(F.data.startswith("admin_ticket_view_"))
 async def admin_ticket_view(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -102,18 +94,30 @@ async def admin_ticket_view(callback: CallbackQuery):
     if ticket.subject:
         text += f"Тема: {escape_html(ticket.subject)}\n\n"
 
+    files_to_send = []
     for msg in messages:
         sender = "👤 Пользователь" if not msg.is_admin else "🛠 Вы (админ)"
         time_str = msg.created_at[:16] if msg.created_at else ""
         file_info = " 📎 (файл)" if msg.file_path else ""
         text += f"{sender} [{time_str}]:{file_info}\n{escape_html(msg.message)}\n\n"
+        if msg.file_path:
+            files_to_send.append((msg.file_path, msg.is_admin))
 
     kb = admin_ticket_control_keyboard(ticket_id) if ticket.status == 'open' else None
     await safe_edit_message(callback.message, text, reply_markup=kb, parse_mode="HTML")
+
+    for file_path, is_admin_msg in files_to_send:
+        sender_label = "Админ" if is_admin_msg else "Пользователь"
+        caption = f"📎 Файл из тикета #{ticket_id} (от {sender_label})"
+        try:
+            input_file = FSInputFile(file_path)
+            await callback.message.answer_document(input_file, caption=caption)
+        except Exception as e:
+            logger.error(f"Не удалось отправить файл {file_path} админу {admin_id}: {e}")
+
     await callback.answer()
 
 
-# Ответ админа
 @router.callback_query(F.data.startswith("admin_ticket_reply_"))
 async def admin_ticket_reply_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -145,10 +149,8 @@ async def admin_ticket_reply_message(message: Message, state: FSMContext, bot: B
         await state.clear()
         return
 
-    # Сохраняем сообщение
     await ticket_service.add_message(ticket_id, admin_id, True, message.text)
 
-    # Уведомляем пользователя с кнопкой ответа
     try:
         user_kb = InlineKeyboardBuilder()
         user_kb.button(text="💬 Ответить", callback_data=f"ticket_reply_{ticket_id}")
@@ -166,7 +168,6 @@ async def admin_ticket_reply_message(message: Message, state: FSMContext, bot: B
     await state.clear()
 
 
-# Запрос файла у пользователя
 @router.callback_query(F.data.startswith("admin_ticket_request_file_"))
 async def admin_ticket_request_file_start(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -201,16 +202,15 @@ async def admin_ticket_request_file_message(message: Message, state: FSMContext,
         await state.clear()
         return
 
-    # Сохраняем запрос как обычное сообщение от админа
     await ticket_service.add_message(ticket_id, admin_id, True, request_text)
 
-    # Уведомляем пользователя с кнопкой для отправки файла
     try:
         user_kb = InlineKeyboardBuilder()
         user_kb.button(text="📎 Отправить файл", callback_data=f"ticket_reply_{ticket_id}")
         await bot.send_message(
             ticket.user_id,
-            f"📎 <b>Запрос файла от администратора по тикету #{ticket_id}</b>\n\n{escape_html(request_text)}\n\nНажмите кнопку ниже, чтобы ответить и прикрепить файл.",
+            f"📎 <b>Запрос файла от администратора по тикету #{ticket_id}</b>\n\n"
+            f"{escape_html(request_text)}\n\nНажмите кнопку ниже, чтобы ответить и прикрепить файл.",
             reply_markup=user_kb.as_markup(),
             parse_mode="HTML"
         )
@@ -222,7 +222,6 @@ async def admin_ticket_request_file_message(message: Message, state: FSMContext,
     await state.clear()
 
 
-# Закрытие тикета админом
 @router.callback_query(F.data.startswith("admin_ticket_close_"))
 async def admin_ticket_close(callback: CallbackQuery):
     admin_id = callback.from_user.id
@@ -238,7 +237,6 @@ async def admin_ticket_close(callback: CallbackQuery):
 
     await ticket_service.close_ticket(ticket_id, admin_id)
 
-    # Уведомляем пользователя
     try:
         await callback.bot.send_message(
             ticket.user_id,

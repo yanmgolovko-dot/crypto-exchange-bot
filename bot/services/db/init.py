@@ -44,7 +44,7 @@ def init_db_sync():
             available_spins INTEGER DEFAULT 0
         )
     """)
-    
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS exchange_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,7 +110,8 @@ def init_db_sync():
             is_active BOOLEAN DEFAULT 1,
             created_by INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            description TEXT
+            description TEXT,
+            owner_id INTEGER
         )
     """)
 
@@ -152,10 +153,8 @@ def init_db_sync():
     """)
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('payment_mode', 'auto')")
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('reminders_enabled', '1')")
-    # Фиксированные комиссии сети (sat). Платит клиент (скрыто), уходит на сеть.
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('network_fee_btc_sat', '800')")
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('network_fee_ltc_sat', '2000')")
-    # Флаг «режим обмена»: 1 = обмен включён, 0 = временно приостановлен
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('exchange_enabled', '1')")
 
     c.execute("""
@@ -465,7 +464,6 @@ def init_db_sync():
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN user_payment_details TEXT")
     except sqlite3.OperationalError: pass
-    # Разбивка наценки: маржа обменника + сетевая комиссия
     try:
         c.execute("ALTER TABLE exchange_orders ADD COLUMN commission_rub REAL DEFAULT 0")
         logger.info("Колонка commission_rub добавлена в exchange_orders")
@@ -490,6 +488,17 @@ def init_db_sync():
     except sqlite3.OperationalError:
         logger.debug("Колонка available_spins уже существует")
 
+    # ===== МИГРАЦИЯ: персональные промокоды =====
+    try:
+        c.execute("ALTER TABLE promo_codes ADD COLUMN owner_id INTEGER")
+        logger.info("Колонка owner_id добавлена в promo_codes")
+    except sqlite3.OperationalError:
+        logger.debug("Колонка owner_id уже существует в promo_codes")
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_promo_owner ON promo_codes(owner_id)")
+    except sqlite3.OperationalError as e:
+        logger.warning(f"Не удалось создать idx_promo_owner: {e}")
+
     # ===== НАСТРОЙКИ МИНИ-ИГРЫ =====
     c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('spin_threshold', '5')")
     default_prizes = '[{"min":1,"max":30,"type":"nothing","text":"Пусто"},{"min":31,"max":45,"type":"coupon","value":5,"text":"Купон 5%"},{"min":46,"max":55,"type":"coupon","value":10,"text":"Купон 10%"},{"min":56,"max":62,"type":"balance","value":50,"text":"50 ₽ на баланс"},{"min":63,"max":63,"type":"balance","value":100,"text":"100 ₽ на баланс"},{"min":64,"max":64,"type":"balance","value":500,"text":"500 ₽ на баланс"}]'
@@ -511,8 +520,6 @@ def init_db_sync():
         logger.error(f"Ошибка при инициализации счётчика заявок: {e}")
 
     # ===== МИГРАЦИЯ: фиксированная комиссия сети =====
-    # Заявки в статусе waiting_network_fee больше никто не обработает (воркер удалён),
-    # переводим их в 'paid' — админ подтвердит вручную.
     try:
         cursor = conn.execute("UPDATE exchange_orders SET status = 'paid' WHERE status = 'waiting_network_fee'")
         if cursor.rowcount > 0:
